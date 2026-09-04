@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Secrets (real config lives in C:\Users\broic\Code\voiceagent-local\config.ini)
+config.ini
+
+# Piper voice models (>100 MB, exceed GitHub's file limit; download via
+#   python -m piper.download_voices <voice>)
+*.onnx
+*.onnx.json
+
+# Call recordings / large audio
+audio/call_last.wav
