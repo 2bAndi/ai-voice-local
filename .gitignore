@@ -22,3 +22,4 @@ radicale-data/
 
 # Glass Box event recordings (one JSONL per call)
 calls/
+models/

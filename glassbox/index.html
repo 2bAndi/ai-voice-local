@@ -37,7 +37,11 @@ input[type=range]{width:170px;accent-color:var(--real)}
 .corr{font-family:var(--mono);font-size:11px;color:var(--dim)}
 main{display:grid;grid-template-columns:1fr 360px;grid-template-rows:minmax(0,1fr);height:calc(100% - 48px)}
 .left{display:grid;grid-template-rows:auto 6px minmax(0,1fr) 6px 200px;min-width:0;border-right:1px solid var(--line)}
-.right{display:grid;grid-template-rows:auto 6px auto 6px minmax(0,1fr) 6px minmax(0,1fr);min-width:0}
+.right{display:grid;grid-template-rows:auto 6px auto 6px auto 6px minmax(0,1fr) 6px minmax(0,1fr);min-width:0}
+#ctl .kv{grid-template-columns:130px 1fr}
+#ctl .kv select{padding:2px 6px;font-size:11.5px}
+#ctl .msg{grid-column:1/-1;font-family:var(--mono);font-size:11px;color:var(--dim)}
+#ctl .msg.err{color:var(--bad)}
 section{min-height:0;display:flex;flex-direction:column;overflow:hidden}
 /* drag handles between panels: the panel above each handle gets a fixed height, the flexible one absorbs */
 .gutter{background:var(--line);cursor:row-resize;position:relative;user-select:none}
@@ -153,6 +157,21 @@ pre.raw b{color:var(--ink);font-weight:500}
     </section>
   </div>
   <div class="right">
+    <section id="ctl">
+      <div class="sec-h">Agent controls · next call <span class="n" id="ctln"></span></div>
+      <div class="body">
+        <div class="kv">
+          <div class="k">language</div><div><select data-ctl="language"></select></div>
+          <div class="k">STT backend</div><div><select data-ctl="stt_backend"></select></div>
+          <div class="k">endpoint</div><div><select data-ctl="endpoint_ms"></select></div>
+          <div class="k">speculative LLM</div><div><select data-ctl="speculative"><option value="true">on</option><option value="false">off</option></select></div>
+          <div class="k">auto-detect lang</div><div><select data-ctl="language_detect"><option value="true">on</option><option value="false">off</option></select></div>
+          <div class="k">canonical English</div><div><select data-ctl="canonical_english"><option value="true">on</option><option value="false">off</option></select></div>
+          <div class="msg" id="ctlmsg"></div>
+        </div>
+      </div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
     <section>
       <div class="sec-h">Confirm gate</div>
       <div class="body">
@@ -295,7 +314,7 @@ function involved(ev){
   if(k.startsWith("sip.")||k==="rtp.rx.first"||k==="rtp.tx.start"){ boxes.push("b-caller","b-carrier","b-avaya"); edges.push("e-caller-avaya","e-carrier-sbc"); }
   if(k==="rtp.write"||k==="tts.greeting"){ boxes=OUT_PATH.filter(x=>x.startsWith("b-")); edges=OUT_PATH.filter(x=>x.startsWith("e-")); }
   if(k==="vad.start"||k==="vad.utterance"||k==="vad.level"){ boxes=IN_PATH.filter(x=>x.startsWith("b-")); edges=IN_PATH.filter(x=>x.startsWith("e-")); }
-  if(k==="stt.done"||k==="llm.sentence") boxes.push("b-convlog");
+  if(k==="stt.done"||k==="llm.sentence"||k==="stt.partial") boxes.push("b-convlog");
   if(k==="turn.first_audio") boxes.push("b-latency");
   if(k==="worm.ack"){ boxes.push("b-wormstore"); edges.push("e-worm-store"); }
   if(k==="bank.card_blocked"){ boxes.push("b-sor"); edges.push("e-bank-sor"); }
@@ -386,13 +405,20 @@ function fmtT(t){ return t==null?"":(t<0?"−":"")+Math.abs(t).toFixed(3)+"s"; }
 function shortDetail(ev){
   const p=ev.payload||{}, k=ev.kind;
   if(k.startsWith("sip.")) return p.line||"";
-  if(k==="stt.done") return '"'+(p.text||"").slice(0,70)+'"  · lang '+(p.language||"?")+(p.language_mode?" ("+p.language_mode+")":"")+(p.beam?" beam "+p.beam:"");
+  if(k==="stt.done") return '"'+(p.text||"").slice(0,70)+'"  · lang '+(p.language||"?")+(p.language_mode?" ("+p.language_mode+")":"")+(p.backend?" · "+p.backend:"")+(p.partials!=null?" · "+p.partials+" partials":"")+(p.translated_to_en?" · translated → en":"");
   if(k==="llm.sentence") return '"'+(p.text||"").slice(0,80)+'"';
   if(k==="llm.prompt") return p.update ? "system prompt updated · "+p.update+" · reply in "+p.reply_language : "system prompt "+p.chars+" chars · reply in "+p.reply_language+" · "+(p.tools||[]).length+" tools · "+(p.rules||[]).length+" rules · "+(p.guardrails||[]).length+" guardrails";
+  if(k==="control.changed") return Object.entries(p).filter(([a])=>a!=="applies").map(([a,b])=>a+"="+b).join(", ")+" · next call";
+  if(k==="stt.partial") return (p.stable?"STABLE ":"partial #"+p.n+" ")+'"'+(p.text||"").slice(0,80)+'"'+(p.stable?" · caller paused":"");
+  if(k==="stt.endpoint") return "utterance ended · "+p.silence_ms+" ms pause · "+p.backend;
+  if(k==="llm.speculative.start") return 'LLM starts early on "'+(p.text||"").slice(0,60)+'"';
+  if(k==="llm.speculative.confirmed") return "final = stable partial · head start "+p.head_start_ms+" ms";
+  if(k==="llm.speculative.discarded") return 'discarded ("'+(p.speculative||"").slice(0,30)+'" ≠ "'+(p.final||"").slice(0,30)+'") · '+p.reason;
+  if(k==="llm.speculative.wait") return "held: "+(p.reason||"")+" "+JSON.stringify(p.tools||[]);
   if(k==="stt.language") return "detected "+p.detected+" (p="+p.probability+") · current "+p.current+" → "+p.decision+" · "+(p.reason||"");
   if(k==="speech.switch") return "language "+p.from+" → "+p.to+" · voice "+p.voice_from+" → "+p.voice_to+" · reply in "+p.reply_language;
   if(k==="llm.request") return "iter "+p.iteration+" · "+p.messages+" msgs · "+p.model+" · temp "+p.temperature+" · think off · after "+p.last_role;
-  if(k==="speech.config"){ const s=p.stt||{}, t=p.tts||{}; return "STT "+s.model+" "+s.compute+" beam "+s.beam+" lang="+s.language+" · "+(s.mode||"")+" · TTS "+t.voice+" · reply "+p.reply_language; }
+  if(k==="speech.config"){ const s=p.stt||{}, t=p.tts||{}; return "STT "+(s.backend?s.backend+" streaming · ":"")+s.model+" · endpoint "+(s.endpoint_ms||"")+" ms · lang="+s.language+" · "+(s.mode||"")+" · TTS "+t.voice+(s.speculative_llm?" · speculative LLM":""); }
   if(k==="tts.synth") return (p.audio_ms||"?")+" ms audio · "+(p.voice||"")+(p.text?' "'+p.text.slice(0,50)+'"':"");
   if(k==="guardrail.pass") return "turn passed "+(p.checks||[]).length+" checks · tools this turn: "+p.tools_called_this_turn+" · nudges "+p.nudges;
   if(k==="guardrail.nudge") return p.type+' → LLM told: "'+(p.instruction||"").slice(0,60)+'…"';
@@ -411,7 +437,7 @@ function shortDetail(ev){
   if(k==="rtp.tx.start") return p.codec+" → "+p.to;
   if(k==="rtp.dtmf") return "digit masked";
   if(k==="vad.level") return "peak "+p.peak_rms+" / thr "+p.threshold+(p.speech?" · in speech":"");
-  if(k==="vad.start") return "speech onset rms "+p.rms;
+  if(k==="vad.start") return "speech onset · "+(p.vad?p.vad+" vad":"rms "+p.rms)+(p.backend?" · "+p.backend:"");
   if(k==="call.start") return "from "+(p.sip_from||"");
   if(k==="call.end") return p.reason+" · turns "+(p.turns??"");
   if(k.startsWith("guardrail.")||k.startsWith("action.")||k.startsWith("bank.")) return Object.entries(p).map(([a,b])=>a+"="+b).join(", ").slice(0,90);
@@ -591,6 +617,33 @@ function initResizable(col, key){
     g.ondblclick=()=>{ try{ localStorage.removeItem(key); }catch(e){} col.style.gridTemplateRows=""; heights=secs.map(s=>s.offsetHeight); apply(); };
   });
 }
+// ---- agent controls (live agent only): GET fills the selects, a change POSTs one field
+async function loadControls(){
+  const sec=document.getElementById("ctl"), msg=document.getElementById("ctlmsg");
+  let c; try{ const r=await fetch("/api/control"); if(!r.ok) throw new Error((await r.json()).error||r.status); c=await r.json(); }
+  catch(e){ sec.querySelectorAll("select").forEach(s=>s.disabled=true); msg.textContent="replay-only server · no live agent"; return; }
+  renderControls(c);
+}
+function renderControls(c){
+  const rt=c.runtime||{}, opt=c.options||{}, msg=document.getElementById("ctlmsg");
+  const fill=(sel,vals,cur)=>{ sel.innerHTML=""; for(const v of vals){ const o=document.createElement("option"); o.value=String(v); o.textContent=String(v); sel.appendChild(o);} sel.value=String(cur); };
+  const NAMES={en:"en · English",de:"de · German",da:"da · Danish"};
+  const ls=document.querySelector('[data-ctl="language"]'); fill(ls,opt.language||[],rt.language); [...ls.options].forEach(o=>o.textContent=NAMES[o.value]||o.value);
+  fill(document.querySelector('[data-ctl="stt_backend"]'),opt.stt_backend||[],rt.stt_backend);
+  const es=document.querySelector('[data-ctl="endpoint_ms"]'); fill(es,opt.endpoint_ms||[],rt.endpoint_ms); [...es.options].forEach(o=>o.textContent=o.value+" ms");
+  for(const k of ["speculative","language_detect","canonical_english"]) document.querySelector(`[data-ctl="${k}"]`).value=String(!!rt[k]);
+  document.getElementById("ctln").textContent=rt.language+" · "+rt.stt_backend;
+  msg.classList.remove("err");
+  msg.textContent=(opt.voices_missing&&opt.voices_missing.length?"no Piper voice for: "+opt.voices_missing.join(", ")+" · ":"")+"changes apply to the next call";
+}
+document.querySelectorAll("#ctl select").forEach(sel=>{ sel.onchange=async()=>{
+  const k=sel.dataset.ctl; let v=sel.value; if(v==="true"||v==="false") v=(v==="true"); if(k==="endpoint_ms") v=+v;
+  const msg=document.getElementById("ctlmsg");
+  try{ const r=await fetch("/api/control",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({[k]:v})}); const c=await r.json();
+    renderControls(c); if(c.ok===false){ msg.classList.add("err"); msg.textContent=c.error; } else { msg.textContent="saved: "+k+" = "+v+" · applies to the next call"; } }
+  catch(e){ msg.classList.add("err"); msg.textContent="control failed: "+e; }
+}; });
+loadControls();
 initResizable(document.querySelector(".left"),"gb.rows.left");
 initResizable(document.querySelector(".right"),"gb.rows.right");
 </script>

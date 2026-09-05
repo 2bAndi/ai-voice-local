@@ -10,14 +10,15 @@
 #   1. Python 3.12 venv at .\.venv (inside the project folder, git-ignored)
 #   2. pip packages: faster-whisper + CUDA 12 wheels, piper-tts, pyVoIP<2, scipy, ollama client, ...
 #   3. Ollama (winget) + performance env vars + pull of the LLM (default qwen3.8:27b, ~18 GB)
-#   4. Piper voices into .\voices\ (en_US-lessac-high, de_DE-thorsten-high)
+#   4. Piper voices into .\voices\ (en_US-lessac-high, de_DE-thorsten-high, da_DK-talesyntese-medium)
+#   4b. Streaming STT models into .\models\ (Silero VAD, sherpa-onnx streaming Zipformer en)
 #   5. config.ini skeleton at .\config.ini (git-ignored)
 #   6. Environment check: python tests\check_env.py
 #
 # Override the LLM:   .\setup.ps1 -Llm qwen3.5:9b
 param(
     [string]$Llm = "qwen3.8:27b",
-    [string[]]$Voices = @("en_US-lessac-high", "de_DE-thorsten-high"),
+    [string[]]$Voices = @("en_US-lessac-high", "de_DE-thorsten-high", "da_DK-talesyntese-medium"),
     [switch]$SkipModels
 )
 
@@ -65,7 +66,7 @@ Step "pip packages"
 # CUDA 12 runtime libs as pip wheels (cuBLAS + cuDNN 9) - no separate CUDA toolkit install needed.
 & $py -m pip install --upgrade `
     "faster-whisper>=1.1" nvidia-cublas-cu12 nvidia-cudnn-cu12 `
-    piper-tts "pyVoIP<2" scipy numpy sounddevice ollama `
+    piper-tts "pyVoIP<2" scipy numpy sounddevice ollama sherpa-onnx `
     fastapi uvicorn websockets `
     caldav radicale
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed (see above)." }
@@ -121,6 +122,28 @@ if (-not $SkipModels) {
     & $py -m piper.download_voices --download-dir $voiceDir @Voices
 }
 Get-ChildItem $voiceDir -Filter *.onnx | ForEach-Object { Write-Host "    $($_.Name)  $([math]::Round($_.Length/1MB)) MB" }
+
+# ---------------------------------------------------------------- 4b. Streaming STT models (VAD + sherpa-onnx)
+Step "Streaming STT models -> $project\models"
+$modelDir = Join-Path $project "models"
+New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+$rel = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+$vad = Join-Path $modelDir "silero_vad.onnx"
+if (-not (Test-Path $vad)) {
+    Write-Host "    downloading silero_vad.onnx (0.6 MB)"
+    Invoke-WebRequest "$rel/silero_vad.onnx" -OutFile $vad
+} else { Write-Host "    exists: silero_vad.onnx" }
+$zipName = "sherpa-onnx-streaming-zipformer-en-2023-06-26"
+if (-not $SkipModels) {
+    if (-not (Test-Path (Join-Path $modelDir "$zipName\tokens.txt"))) {
+        Write-Host "    downloading $zipName (300 MB, English streaming transducer) ..."
+        $tarball = Join-Path $modelDir "$zipName.tar.bz2"
+        Invoke-WebRequest "$rel/$zipName.tar.bz2" -OutFile $tarball
+        tar -xjf $tarball -C $modelDir
+        if ($LASTEXITCODE -ne 0) { Warn "tar failed - extract $tarball into $modelDir by hand (7-Zip)." }
+        else { Remove-Item $tarball -ErrorAction SilentlyContinue }
+    } else { Write-Host "    exists: $zipName" }
+}
 
 # ---------------------------------------------------------------- 5. config.ini
 Step "config.ini"

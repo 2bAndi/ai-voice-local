@@ -46,6 +46,7 @@ from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError  # noqa: E402
 from ollama import chat  # noqa: E402
 from agent import gateway  # noqa: E402  (tool gateway: confirm gate + WORM + bank mock)
 from agent import recorder  # noqa: E402  (per-call stereo WAV for the Glass Box player)
+from agent import stt_stream  # noqa: E402  (streaming STT: 20 ms slices in, partials out)
 
 MODEL = settings.LLM_MODEL
 
@@ -77,6 +78,11 @@ CFG_L = LANG_CFG[LANGUAGE]
 VOICE_NAME = CFG_L["voice"]
 VOICE_ONNX = PROJECT / "voices" / f"{VOICE_NAME}.onnx"
 LANG_DETECT_MIN_PROB = 0.6      # whisper language probability needed to switch
+# Vocabulary the streaming decoder is primed with (whisper initial_prompt), plus the agent's
+# last sentence - short telephone answers ("Visa", "Smith") are otherwise easy to mishear.
+STT_VOCAB = {"en": "Demo Bank card security line. Visa, Mastercard, credit card, lost, stolen, fraud, damaged, blocked, yes, no, correct.",
+             "de": "Demo Bank Kartensperr-Hotline. Visa, Mastercard, Kreditkarte, verloren, gestohlen, Betrug, beschaedigt, gesperrt, ja, nein, richtig.",
+             "da": "Demo Bank kortspaerring. Visa, Mastercard, kreditkort, mistet, stjaalet, svindel, beskadiget, spaerret, ja, nej, korrekt."}
 LANG_DETECT_TURNS = 2           # try on the first N caller utterances, stop after a switch
 
 
@@ -104,11 +110,13 @@ LEVEL_REPORT_S = 2.0         # while listening, report the peak level this often
 TOOLS = gateway.build_tools()
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(translated_input: bool = False) -> str:
     now = dt.datetime.now()
+    note = (" The caller speaks another language; their words reach you machine-translated to English."
+            if translated_input else "")
     return f"""You are the automated card security line of Demo Bank. Your only job is to help
 callers BLOCK a credit card (and optionally order a replacement).
-You MUST reply exclusively in {CFG_L['reply_lang']}. Today is {now.strftime('%A, %d %B %Y')}.
+You MUST reply exclusively in {CFG_L['reply_lang']}.{note} Today is {now.strftime('%A, %d %B %Y')}.
 
 Follow this flow strictly, one step at a time:
 1. Ask what happened (reason must be one of: lost, stolen, fraud, damaged).
@@ -171,6 +179,11 @@ _piper_cache: dict = {}      # voice name -> loaded PiperVoice (every installed 
 
 def _load_piper():
     global _piper_voice
+    if not voice_available(LANGUAGE):
+        sys.exit(f"Piper voice for language '{LANGUAGE}' is missing: {VOICE_ONNX}\n"
+                 f"Download it once (venv active, project folder):\n"
+                 f"    python -m piper.download_voices --download-dir voices {VOICE_NAME}\n"
+                 f"or set  language = en | de  in config.ini.")
     try:
         from piper import PiperVoice
         for lang, cfg in LANG_CFG.items():
@@ -317,7 +330,7 @@ THINK_TAG = re.compile(r"</?think>")
 CLAIM_WITHOUT_TOOL = re.compile(
     r"(did(n't| not) match|is (now )?(verified|blocked|confirmed)|has been (verified|blocked)|"
     r"(verification|answer) (failed|was (in)?correct)|(nicht|stimmt) (überein|korrekt)|"
-    r"ist (jetzt )?(gesperrt|verifiziert))", re.I)
+    r"ist (jetzt )?(gesperrt|verifiziert)|er (nu )?(spærret|verificeret|bekræftet)|matchede ikke)", re.I)
 
 
 def make_typing_clip(duration_s: float = 1.4) -> bytes:
@@ -346,12 +359,71 @@ def make_typing_clip(duration_s: float = 1.4) -> bytes:
     return (out * 32767).astype(np.int16).tobytes()
 
 
-def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
-    """Run one dialog turn; returns the reply text that was spoken last."""
+class Cancelled(Exception):
+    """A speculative turn was discarded because the final transcript differed."""
+
+
+class Speculation:
+    """A speculative LLM turn started on a stable partial transcript while the caller pauses.
+    Nothing it produces reaches the caller until confirm(): sentences are held, tool calls wait.
+    If the final transcript differs, cancel() aborts the turn and everything held is dropped."""
+
+    def __init__(self, text: str, messages: list):
+        self.text = text
+        self.messages = messages            # private copy of the dialog, adopted on confirm
+        self.confirmed = threading.Event()
+        self.cancelled = threading.Event()
+        self.result = None
+        self._pending: list[str] = []
+        self._lock = threading.Lock()
+        self.t0 = time.time()
+
+    @staticmethod
+    def norm(t: str) -> str:
+        return re.sub(r"[^\w]+", " ", t).strip().lower()
+
+    def matches(self, final: str) -> bool:
+        return self.norm(final) == self.norm(self.text)
+
+    def say(self, sentence: str, say):
+        with self._lock:
+            if self.confirmed.is_set():
+                say(sentence)
+            elif not self.cancelled.is_set():
+                self._pending.append(sentence)
+
+    def confirm(self, say):
+        with self._lock:
+            self.confirmed.set()
+            for sentence in self._pending:
+                say(sentence)
+            self._pending.clear()
+
+    def cancel(self):
+        self.cancelled.set()
+
+    def wait(self) -> bool:
+        """Block until confirmed (True) or cancelled (False)."""
+        while not (self.confirmed.is_set() or self.cancelled.is_set()):
+            self.confirmed.wait(0.05)
+            if self.cancelled.is_set():
+                return False
+        return self.confirmed.is_set()
+
+
+def llm_speak_turn(messages: list, say, play_typing, fallback_text: str, spec: "Speculation | None" = None) -> str:
+    """Run one dialog turn; returns the reply text that was spoken last.
+    With `spec` the turn is speculative: speech is held and tools wait until spec.confirm()."""
     spoken: set = set()
     nudges = 0
     tools_called_this_turn = False
     held: list = []          # claimed tool results held back until a tool has actually run
+
+    def speak(sentence: str):
+        if spec is not None:
+            spec.say(sentence, say)
+        else:
+            say(sentence)
 
     def say_once(sentence: str):
         key = sentence.strip().lower()
@@ -361,7 +433,7 @@ def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
             held.append(sentence.strip())       # do not speak a result nobody produced
             return                              # (and nothing that follows it in this pass)
         spoken.add(key)
-        say(sentence.strip())
+        speak(sentence.strip())
 
     iteration = 0
     while True:
@@ -377,13 +449,16 @@ def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
                                                 "temperature": settings.OLLAMA_OPTIONS.get("temperature"),
                                                 "num_ctx": settings.OLLAMA_OPTIONS.get("num_ctx"),
                                                 "last_role": messages[-1]["role"],
-                                                "last_message": str(messages[-1].get("content", ""))[:200]})
+                                                "last_message": str(messages[-1].get("content", ""))[:200],
+                                                "speculative": bool(spec and not spec.confirmed.is_set())})
         think_stripped = False
         for part in chat(MODEL, messages=messages, tools=list(TOOLS.values()),
                          think=False, stream=True, keep_alive=-1,
                          options=settings.OLLAMA_OPTIONS):
             m = part.message
             n_tokens += 1
+            if spec is not None and spec.cancelled.is_set():
+                raise Cancelled()
             if first_token is None and (m.content or m.tool_calls):
                 first_token = time.time()
                 events.emit("SP-C→SP-D", "llm.token.first", {"iteration": iteration},
@@ -421,10 +496,10 @@ def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
         if not tool_calls:
             text = full.strip()
             if text:
-                print(f"AGENT: {text}")
+                print(f"AGENT{' (speculative, held)' if spec is not None and not spec.confirmed.is_set() else ''}: {text}")
             # Safety net 1: action announced but no tool called -> push the model
             if (nudges < 2 and text and len(text) < 90 and "?" not in text
-                    and re.search(r"\b(moment|check|verify|look|hold on|checking)\b", text, re.I)):
+                    and re.search(r"\b(moment|check|verify|look|hold on|checking|augenblick|prüfe|überprüfe|schaue|øjeblik|tjekker|kontrollerer)\b", text, re.I)):
                 nudges += 1
                 print("   [nudge: model announced an action but called no tool]")
                 instr = ("You announced an action but did not call any tool. "
@@ -469,6 +544,11 @@ def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
                 "iterations": iteration})
             return text
 
+        if spec is not None and not spec.confirmed.is_set():
+            # tools change the world: a speculative turn may not call them before the transcript is final
+            events.emit("AGENT", "llm.speculative.wait", {"reason": "tool call pending", "tools": [tc.function.name for tc in tool_calls]})
+            if not spec.wait():
+                raise Cancelled()
         if not spoken:
             say_once(random.choice(CFG_L["fillers"]))
         play_typing()
@@ -496,6 +576,99 @@ def llm_speak_turn(messages: list, say, play_typing, fallback_text: str) -> str:
 print(settings.describe())
 print(f"Loading Whisper {settings.STT_MODEL} ({settings.STT_COMPUTE}) ...")
 whisper = settings.load_whisper()
+try:
+    import sherpa_onnx  # noqa: F401 - Silero VAD for both STT backends (and the sherpa recogniser)
+except ImportError:
+    sys.exit("The streaming STT needs the sherpa-onnx package (Silero VAD). In the venv run:\n"
+             "    pip install sherpa-onnx\n(or re-run setup.ps1), then start the agent again.")
+if not (PROJECT / settings.VAD_MODEL).exists():
+    sys.exit(f"VAD model missing: {PROJECT / settings.VAD_MODEL} - run setup.ps1 (downloads models\\silero_vad.onnx).")
+_stt_engines: dict = {}
+
+
+def get_stt_engine(name: str):
+    """STT backends are created once and kept (the STT swap point); raises if a backend is unavailable."""
+    if name not in _stt_engines:
+        if name == "sherpa":
+            _stt_engines[name] = stt_stream.SherpaStream(PROJECT / settings.SHERPA_MODEL, PROJECT / settings.VAD_MODEL)
+        elif name == "whisper":
+            _stt_engines[name] = stt_stream.WhisperStream(whisper, PROJECT / settings.VAD_MODEL, LANG_CFG[LANGUAGE]["whisper"],
+                                                          beam=settings.STT_BEAM, interval=settings.STT_INTERVAL)
+        else:
+            raise ValueError(f"unknown STT backend '{name}'")
+    return _stt_engines[name]
+
+
+try:
+    stt_engine = get_stt_engine(settings.STT_BACKEND)
+except Exception as e:  # noqa: BLE001 - e.g. sherpa model missing
+    print(f"Streaming STT backend '{settings.STT_BACKEND}' unavailable ({e}) - using whisper stream.")
+    stt_engine = get_stt_engine("whisper")
+
+# ----- Runtime controls: what the next call uses. Changed from the Glass Box page (POST /api/control)
+# without restarting the agent; config.ini only provides the start values.
+RUNTIME = {"language": settings.LANGUAGE, "stt_backend": stt_engine.name, "speculative": settings.SPECULATIVE,
+           "endpoint_ms": settings.ENDPOINT_MS, "language_detect": settings.LANGUAGE_DETECT,
+           "canonical_english": settings.CANONICAL_ENGLISH}
+_runtime_lock = threading.Lock()
+
+
+def control_options() -> dict:
+    return {"language": [l for l in LANG_CFG if voice_available(l)], "stt_backend": ["whisper", "sherpa"],
+            "endpoint_ms": [400, 600, 800, 1000, 1200], "speculative": [True, False],
+            "language_detect": [True, False], "canonical_english": [True, False],
+            "voices_missing": [l for l in LANG_CFG if not voice_available(l)]}
+
+
+def get_control() -> dict:
+    with _runtime_lock:
+        return {"runtime": dict(RUNTIME), "options": control_options(), "applies": "next call"}
+
+
+def apply_control(changes: dict) -> dict:
+    """Validate and apply control changes; returns {ok, error?, runtime}."""
+    errors = []
+    new = {}
+    for k, v in (changes or {}).items():
+        if k == "language":
+            if v not in LANG_CFG:
+                errors.append(f"unknown language '{v}'")
+            elif not voice_available(v):
+                errors.append(f"no Piper voice for '{v}' - python -m piper.download_voices --download-dir voices {LANG_CFG[v]['voice']}")
+            else:
+                new[k] = v
+        elif k == "stt_backend":
+            try:
+                get_stt_engine(v)
+                new[k] = v
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"STT backend '{v}' unavailable: {str(e)[:120]}")
+        elif k == "endpoint_ms":
+            try:
+                ms = int(v)
+                if not 200 <= ms <= 3000:
+                    raise ValueError
+                new[k] = ms
+            except (TypeError, ValueError):
+                errors.append("endpoint_ms must be 200..3000")
+        elif k in ("speculative", "language_detect", "canonical_english"):
+            new[k] = bool(v) if not isinstance(v, str) else v.lower() in ("1", "true", "yes", "on")
+        else:
+            errors.append(f"unknown control '{k}'")
+    if errors:
+        return {"ok": False, "error": "; ".join(errors), **get_control()}
+    with _runtime_lock:
+        RUNTIME.update(new)
+    if new:
+        print(f"Controls updated from the Glass Box: {new}  (next call)")
+        events.emit("AGENT", "control.changed", {**new, "applies": "next call"})
+    return {"ok": True, **get_control()}
+
+
+stt_stream.ENDPOINT_MS = settings.ENDPOINT_MS
+print(f"Streaming STT: {stt_engine.name} (endpoint after {settings.ENDPOINT_MS} ms pause, "
+      f"speculative LLM start {'on' if settings.SPECULATIVE else 'off'}, "
+      f"canonical English {'on' if settings.CANONICAL_ENGLISH else 'off'})")
 _load_piper()
 print(f"Warming up LLM {MODEL} (VRAM load + prompt cache for system prompt and tool schemas) ...")
 t0 = time.time()
@@ -503,12 +676,21 @@ chat(MODEL, messages=[{"role": "system", "content": build_system_prompt()},
                       {"role": "user", "content": "Reply with OK only."}],
      tools=list(TOOLS.values()), think=False, keep_alive=-1, options=settings.OLLAMA_OPTIONS)
 print(f"LLM ready ({time.time()-t0:.1f}s).")
-events.emit("AGENT", "agent.models", {"llm": MODEL, "stt": settings.STT_MODEL,
+events.emit("AGENT", "agent.models", {"llm": MODEL, "stt": settings.STT_MODEL, "stt_backend": stt_engine.name,
                                       "stt_compute": settings.STT_COMPUTE, "stt_beam": settings.STT_BEAM,
                                       "tts_voice": VOICE_NAME, "language": LANGUAGE,
                                       "llm_warmup_s": round(time.time() - t0, 1)})
-GREETING_TEXT = CFG_L["greeting"]
-GREETING_8K = tts_8k(GREETING_TEXT)
+_greeting_cache: dict = {}
+
+
+def greeting_audio(lang: str) -> bytes:
+    """Greeting audio per language, synthesised once (the language can change between calls)."""
+    if lang not in _greeting_cache:
+        _greeting_cache[lang] = tts_8k(LANG_CFG[lang]["greeting"])
+    return _greeting_cache[lang]
+
+
+greeting_audio(LANGUAGE)      # warm the configured language now, others on first use
 TYPING_WAV = PROJECT / "audio" / "typing_8k.wav"
 
 
@@ -545,6 +727,7 @@ TYPING_CLIPS = load_typing_clips()
 if settings.GLASSBOX_PORT:
     try:
         from glassbox import server as glassbox_server
+        glassbox_server.set_control_handlers(get_control, apply_control)
         glassbox_server.start_in_background(settings.GLASSBOX_PORT)
         print(f"Glass Box: http://{socket.gethostbyname(socket.gethostname())}:{settings.GLASSBOX_PORT}  "
               f"(any browser in the LAN)")
@@ -562,12 +745,20 @@ def handle_call(call):
                              language=LANGUAGE)
     print(f"correlation_id={corr}")
     gateway.reset_call()                # fresh identity + gate state per call!
-    set_language(settings.LANGUAGE)     # a previous call may have switched the language
-    detect_langs = [l for l in LANG_CFG if voice_available(l)] if settings.LANGUAGE_DETECT else []
+    with _runtime_lock:
+        rt = dict(RUNTIME)               # controls as set for this call (Glass Box or config.ini)
+    set_language(rt["language"])        # a previous call may have switched the language
+    stt_engine = get_stt_engine(rt["stt_backend"])
+    stt_stream.ENDPOINT_MS = rt["endpoint_ms"]
+    speculative = rt["speculative"]
+    canonical = rt["canonical_english"]
+    detect_langs = [l for l in LANG_CFG if voice_available(l)] if rt["language_detect"] else []
     switched = False
-    system_prompt = build_system_prompt()
+    greeting_text = CFG_L["greeting"]
+    greeting_8k = greeting_audio(LANGUAGE)
+    system_prompt = build_system_prompt(translated_input=canonical and LANGUAGE != "en")
     messages = [{"role": "system", "content": system_prompt},
-                {"role": "assistant", "content": GREETING_TEXT}]
+                {"role": "assistant", "content": greeting_text}]
     # What the LLM is told (SP-D hands the prompt to SP-C) - the sequence shows the rules, the
     # detail pane the full text.
     events.emit("SP-D→SP-C", "llm.prompt", {
@@ -583,7 +774,12 @@ def handle_call(call):
         "text": system_prompt})
     # How speech is understood and produced in SP-B/SP-C - language is fixed by config, not detected
     events.emit("SP-B→SP-C", "speech.config", {
-        "stt": {"model": settings.STT_MODEL, "compute": settings.STT_COMPUTE, "beam": settings.STT_BEAM,
+        "stt": {"backend": stt_engine.name, "streaming": "20 ms slices, partials while speaking",
+                "model": settings.STT_MODEL if stt_engine.name == "whisper" else Path(settings.SHERPA_MODEL).name,
+                "compute": settings.STT_COMPUTE, "beam": settings.STT_BEAM,
+                "endpoint_ms": rt["endpoint_ms"], "pause_ms": stt_stream.PAUSE_MS,
+                "speculative_llm": speculative,
+                "canonical_english": canonical,
                 "language": CFG_L["whisper"],
                 "mode": (f"auto-detect on the first {LANG_DETECT_TURNS} utterances, switchable to {detect_langs}"
                          if detect_langs else "forced by config (no auto-detect)"),
@@ -647,9 +843,9 @@ def handle_call(call):
         threading.Thread(target=reader, daemon=True).start()
         threading.Thread(target=speaker, daemon=True).start()
         time.sleep(0.3)
-        print(f"AGENT: {GREETING_TEXT}")
-        events.emit("SP-C→SP-B", "tts.greeting", {"text": GREETING_TEXT, "audio_ms": round(len(GREETING_8K) / 16)})
-        speak_q.put(GREETING_8K)      # the speaker thread sets playing_until when it starts playback
+        print(f"AGENT: {greeting_text}")
+        events.emit("SP-C→SP-B", "tts.greeting", {"text": greeting_text, "audio_ms": round(len(greeting_8k) / 16)})
+        speak_q.put(greeting_8k)      # the speaker thread sets playing_until when it starts playback
         user_turns = 0
         last_reply = ""
 
@@ -660,28 +856,74 @@ def handle_call(call):
                 time.sleep(wait + 0.2)
             audio_in.clear()
 
-            utt = capture_utterance(call, audio_in)
-            if utt is None:
+            # ---- streaming STT: every 20 ms slice goes straight into the recogniser (SP-B -> SP-C)
+            detecting = bool(detect_langs) and not switched and user_turns < LANG_DETECT_TURNS \
+                and stt_engine.name == "whisper"
+            stt_engine.reset()
+            stt_engine.language = None if detecting else CFG_L["whisper"]
+            translating = canonical and stt_engine.name == "whisper" and (detecting or LANGUAGE != "en")
+            if hasattr(stt_engine, "task"):
+                stt_engine.task = "translate" if translating else "transcribe"
+            if hasattr(stt_engine, "hint"):
+                # the decoder's context is in its OUTPUT language: English when translating
+                hint_lang = "en" if translating else LANGUAGE
+                stt_engine.hint = (STT_VOCAB.get(hint_lang, "") + " " + (last_reply or greeting_text)[-160:]).strip()
+            fb = CFG_L["fallback_start"] if user_turns < 1 else CFG_L["fallback"]
+            spec: Speculation | None = None
+            spec_thread = None
+            final = None
+            n_partials = 0
+            while call.state == CallState.ANSWERED and final is None:
+                if not audio_in:
+                    time.sleep(0.005)
+                    continue
+                chunk = audio_in.popleft()
+                for r in stt_engine.feed(chunk):
+                    if r.kind == "speech_start":
+                        events.emit("SP-A→SP-B", "vad.start", {"backend": r.backend, "vad": "silero"})
+                    elif r.kind == "partial":
+                        n_partials += 1
+                        events.emit("SP-B→SP-C", "stt.partial", {"text": r.text, "stable": r.stable,
+                                                                 "backend": r.backend, "n": n_partials,
+                                                                 "audio_ms": r.audio_ms},
+                                    ms=r.decode_ms)
+                        if r.stable and r.text and spec is None and speculative:
+                            spec = Speculation(r.text, messages + [{"role": "user", "content": r.text}])
+                            events.emit("AGENT", "llm.speculative.start", {"text": r.text, "on": "stable partial (caller paused)"})
+
+                            def _run_spec(sp=spec, fb=fb):
+                                try:
+                                    sp.result = llm_speak_turn(sp.messages, say, play_typing, fb, sp)
+                                except Cancelled:
+                                    sp.result = None
+                            spec_thread = threading.Thread(target=_run_spec, daemon=True)
+                            spec_thread.start()
+                    elif r.kind == "endpoint":
+                        turn_t0[0] = time.time()
+                        first_audio_reported[0] = False
+                        events.emit("SP-A→SP-B", "vad.utterance", {"audio_ms": r.audio_ms, "turn": user_turns + 1,
+                                                                   "endpoint": "silero vad", "silence_ms": r.silence_ms})
+                        events.emit("SP-B→SP-C", "stt.endpoint", {"silence_ms": r.silence_ms, "backend": r.backend})
+                    elif r.kind == "final":
+                        final = r
+                        break
+            if final is None:
+                if spec:
+                    spec.cancel()
                 break
-            turn_t0[0] = time.time()
-            first_audio_reported[0] = False
-            events.emit("SP-A→SP-B", "vad.utterance", {"audio_ms": round(len(utt) / 16),
-                                                       "threshold": VAD_THRESHOLD, "turn": user_turns + 1})
-            t_stt = time.time()
-            detecting = bool(detect_langs) and not switched and user_turns < LANG_DETECT_TURNS
-            segments, info = whisper.transcribe(to_whisper_input(utt),
-                                                language=None if detecting else CFG_L["whisper"],
-                                                vad_filter=False, beam_size=settings.STT_BEAM)
-            text = " ".join(s.text.strip() for s in segments).strip()
-            lang_used = info.language if detecting else CFG_L["whisper"]
+            text = final.text.strip()
+            switched_this_turn = False
+            lang_used = final.language if detecting else CFG_L["whisper"]
             events.emit("SP-B→SP-C", "stt.done", {"text": text, "language": lang_used,
                                                   "language_mode": "auto" if detecting else "forced",
-                                                  "model": settings.STT_MODEL,
-                                                  "beam": settings.STT_BEAM, "audio_ms": round(len(utt) / 16)},
-                        ms=(time.time() - t_stt) * 1000)
-            if detecting:
+                                                  "translated_to_en": bool(translating and lang_used != "en"),
+                                                  "backend": final.backend, "partials": n_partials,
+                                                  "model": settings.STT_MODEL if final.backend == "whisper" else "zipformer",
+                                                  "beam": settings.STT_BEAM, "audio_ms": final.audio_ms},
+                        ms=final.decode_ms)
+            if detecting and final.language:
                 # SP-B decides how the caller is understood; SP-C follows with voice + reply language
-                det, prob = info.language, round(float(info.language_probability or 0), 2)
+                det, prob = final.language, round(float(final.probability or 0), 2)
                 if det == LANGUAGE:
                     decision, reason = "keep", "matches the current language"
                 elif det not in LANG_CFG:
@@ -699,12 +941,13 @@ def handle_call(call):
                     old_voice, old_lang = VOICE_NAME, LANGUAGE
                     set_language(det)
                     switched = True
+                    switched_this_turn = True
                     print(f"   [language switch {old_lang} -> {det} (p={prob})]")
                     events.emit("SP-C→SP-B", "speech.switch", {"from": old_lang, "to": det,
                                                                "voice_from": old_voice, "voice_to": VOICE_NAME,
                                                                "reply_language": CFG_L["reply_lang"],
                                                                "engine": "piper in-process" if _piper_voice is not None else "piper subprocess"})
-                    system_prompt = build_system_prompt()
+                    system_prompt = build_system_prompt(translated_input=canonical and LANGUAGE != "en")
                     messages[0] = {"role": "system", "content": system_prompt}
                     events.emit("SP-D→SP-C", "llm.prompt", {
                         "model": MODEL, "chars": len(system_prompt), "reply_language": CFG_L["reply_lang"],
@@ -717,12 +960,27 @@ def handle_call(call):
                                                                         f"language now forced to '{LANGUAGE}'",
                                                               "turn": user_turns + 1})
             if not text:
+                if spec:
+                    spec.cancel()
                 continue
             print(f"CALLER: {text}")
             user_turns += 1
-            messages.append({"role": "user", "content": text})
-            fb = CFG_L["fallback_start"] if user_turns <= 1 else CFG_L["fallback"]
-            reply = llm_speak_turn(messages, say, play_typing, fb)
+            if spec is not None and spec.matches(text) and not switched_this_turn:
+                # the caller's pause was the end of the sentence: the speculative turn is the real one
+                events.emit("AGENT", "llm.speculative.confirmed", {"text": text,
+                                                                   "head_start_ms": round((time.time() - spec.t0) * 1000)})
+                spec.confirm(say)
+                spec_thread.join()
+                messages[:] = spec.messages
+                reply = spec.result if spec.result is not None else llm_speak_turn(messages, say, play_typing, fb)
+            else:
+                if spec is not None:
+                    events.emit("AGENT", "llm.speculative.discarded", {"speculative": spec.text, "final": text,
+                                                                       "reason": "language switch" if switched_this_turn else "final differs"})
+                    spec.cancel()
+                    spec_thread.join(timeout=10)
+                messages.append({"role": "user", "content": text})
+                reply = llm_speak_turn(messages, say, play_typing, fb)
             # Repeat breaker: reply word-for-word identical to the last turn -> regenerate
             if reply and reply == last_reply:
                 print("   [repeat-breaker: identical reply, regenerating the turn]")

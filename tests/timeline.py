@@ -39,11 +39,19 @@ def short(ev) -> str:
     if k.startswith("sip."):
         return f"{p.get('line','')}  CSeq {p.get('cseq','')}  Call-ID …{(p.get('call_id') or '')[-8:]}"
     if k == "stt.done":
-        return f"\"{p.get('text','')[:70]}\"  lang={p.get('language')} ({p.get('language_mode','')}) beam {p.get('beam','')}"
+        return f"\"{p.get('text','')[:70]}\"  lang={p.get('language')} ({p.get('language_mode','')}) {p.get('backend','')} {p.get('partials','')} partials"
     if k == "llm.sentence":
         return f"\"{p.get('text','')[:90]}\""
     if k == "llm.prompt":
         return f"system prompt {p.get('chars')} chars · reply in {p.get('reply_language')} · tools {p.get('tools')} · {len(p.get('rules') or [])} rules · {len(p.get('guardrails') or [])} guardrails"
+    if k == "control.changed":
+        return ", ".join(f"{a}={b}" for a, b in p.items())
+    if k == "stt.partial":
+        return ("STABLE " if p.get("stable") else f"partial #{p.get('n')} ") + f"\"{p.get('text','')[:80]}\""
+    if k == "stt.endpoint":
+        return f"utterance ended · {p.get('silence_ms')} ms pause · {p.get('backend')}"
+    if k.startswith("llm.speculative."):
+        return ", ".join(f"{a}={str(b)[:50]}" for a, b in p.items())
     if k == "stt.language":
         return f"detected {p.get('detected')} (p={p.get('probability')}) · current {p.get('current')} -> {p.get('decision')} · {p.get('reason','')}"
     if k == "speech.switch":
@@ -80,7 +88,7 @@ def short(ev) -> str:
     if k == "vad.level":
         return f"peak {p.get('peak_rms')} / thr {p.get('threshold')}" + (" · in speech" if p.get("speech") else "")
     if k == "vad.start":
-        return f"speech onset rms {p.get('rms')}"
+        return f"speech onset ({p.get('vad') or 'rms ' + str(p.get('rms'))}{', ' + p['backend'] if p.get('backend') else ''})"
     if k == "rtp.rx.first":
         return f"PT {p.get('payload_type')} {p.get('codec')} SSRC {p.get('ssrc')} from {p.get('from')}"
     if k == "rtp.tx.start":

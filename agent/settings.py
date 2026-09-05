@@ -44,9 +44,16 @@ DEFAULTS = {
     "stt": "large-v3-turbo",
     "stt_compute": "float16",
     "stt_beam": "5",
+    "stt_backend": "whisper",
+    "stt_interval": "0.7",
+    "endpoint_ms": "600",
+    "vad_model": "models/silero_vad.onnx",
+    "sherpa_model": "models/sherpa-onnx-streaming-zipformer-en-2023-06-26",
     "num_ctx": "8192",
     "language": "en",
     "language_detect": "true",
+    "speculative": "true",
+    "canonical_english": "true",
     "port": "8080",
 }
 
@@ -90,11 +97,24 @@ LLM_MODEL = _get("models", "llm")
 STT_MODEL = _get("models", "stt")
 STT_COMPUTE = _get("models", "stt_compute")
 STT_BEAM = int(_get("models", "stt_beam"))
+# Streaming STT (agent/stt_stream.py): "whisper" (faster-whisper as a stream, multilingual, GPU)
+# or "sherpa" (sherpa-onnx streaming Zipformer, English, CPU). Both use the Silero VAD for endpointing.
+STT_BACKEND = _get("models", "stt_backend").strip().lower()
+STT_INTERVAL = float(_get("models", "stt_interval"))      # whisper: seconds of new audio per partial decode
+ENDPOINT_MS = int(_get("models", "endpoint_ms"))          # pause that ends an utterance
+VAD_MODEL = _get("models", "vad_model")
+SHERPA_MODEL = _get("models", "sherpa_model")
 NUM_CTX = int(_get("models", "num_ctx"))
 LANGUAGE = _get("agent", "language")
 # Detect the caller's language on the first utterances (whisper) and switch voice + reply
 # language for the rest of the call. The greeting is always in LANGUAGE.
 LANGUAGE_DETECT = _get("agent", "language_detect").strip().lower() in ("1", "true", "yes", "on")
+# Start the LLM turn on a stable partial transcript (caller paused); discarded if the final differs.
+SPECULATIVE = _get("agent", "speculative").strip().lower() in ("1", "true", "yes", "on")
+# Whisper translates non-English callers to English on the fly (task=translate): the orchestration,
+# the confirm gate and the guardrails then only ever see one language. The reply is still spoken
+# in the caller's language.
+CANONICAL_ENGLISH = _get("agent", "canonical_english").strip().lower() in ("1", "true", "yes", "on")
 GLASSBOX_PORT = int(_get("glassbox", "port"))      # 0 disables the page
 
 # Ollama request options shared by every chat() call
@@ -120,5 +140,5 @@ def load_whisper():
 
 def describe() -> str:
     return (f"config: {CONFIG_PATH or '(none)'} | llm: {LLM_MODEL} | "
-            f"stt: {STT_MODEL}/{STT_COMPUTE}, beam {STT_BEAM} | "
+            f"stt: {STT_BACKEND} {STT_MODEL}/{STT_COMPUTE}, beam {STT_BEAM}, endpoint {ENDPOINT_MS} ms | "
             f"num_ctx: {NUM_CTX} | language: {LANGUAGE} (detect: {LANGUAGE_DETECT})")

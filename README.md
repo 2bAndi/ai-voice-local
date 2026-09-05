@@ -16,6 +16,25 @@ auto-detects the caller's language on the first two utterances and the agent swi
 voice, STT language and reply language for the rest of the call (needs that language's voice
 in `voices\`; the Glass Box shows the decision as `stt.language` / `speech.switch`).
 
+**Streaming STT.** Audio is not collected until the sentence is over: every 20 ms RTP slice
+goes straight into the recogniser (`agent/stt_stream.py`), which emits partial transcripts
+while the caller speaks (`stt.partial`), flags a stable partial when the caller pauses, ends
+the utterance itself with the Silero VAD (`stt.endpoint`, default 600 ms) and delivers the
+final (`stt.done`) with ~0 ms extra latency. Two backends behind the same interface — the STT
+is a swap point: `stt_backend = whisper` (faster-whisper large-v3-turbo as a stream, multilingual,
+LocalAgreement commits) or `sherpa` (sherpa-onnx streaming Zipformer, English, CPU). With
+`speculative = true` the LLM turn already starts on the stable partial; its speech and tool
+calls are held until the final confirms the text (`llm.speculative.*` events), otherwise the
+turn is discarded and re-run. Offline check with a recorded call:
+`python tests\test_stt_stream.py calls\<file>.wav [whisper|sherpa] [--realtime]`.
+
+**Runtime controls.** The Glass Box page has an "Agent controls" panel (language, STT backend,
+endpoint, speculative LLM, auto-detect, canonical English) that changes the agent for the next
+call without a restart (`GET/POST /api/control`); `config.ini` only sets the start values. With
+`canonical_english = true` whisper translates non-English callers to English while they speak
+(`task=translate`), so orchestration, confirm gate and guardrails see one language; replies are
+still spoken in the caller's language.
+
 Every call is also recorded as `calls\<stamp>_<corr8>.wav` (stereo 8 kHz: left caller, right
 agent, same clock as the events). In the Glass Box a replay with a recording shows a player in
 the header: scrubbing the audio moves map, sequence and events to that moment; clicking a row

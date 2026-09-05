@@ -12,6 +12,7 @@ Endpoints
     GET  /api/calls           recorded calls, newest first
     GET  /api/calls/{name}    all events of one recorded call
     GET  /api/calls/{name}/audio   stereo WAV of that call (left caller, right agent), if recorded
+    GET/POST /api/control     runtime controls of the agent (language, STT backend, endpoint, ...) - next call
     GET  /api/worm            WORM chain + verification result
     WS   /ws                  live stream: {"type":"hello", ...} then {"type":"event", "event": {...}}
 
@@ -32,7 +33,7 @@ if str(PROJECT) not in sys.path:
 from agent import events  # noqa: E402
 
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
     import uvicorn
 except ImportError as e:  # pragma: no cover
@@ -48,6 +49,13 @@ _clients: set = set()
 _current: list = []            # events of the call in progress (or the last one), for late joiners
 _agent_info: dict = {}
 _live = False
+_control_get = None            # agent callbacks for the runtime controls (language, STT backend, ...)
+_control_set = None
+
+
+def set_control_handlers(get_fn, set_fn) -> None:
+    global _control_get, _control_set
+    _control_get, _control_set = get_fn, set_fn
 
 
 # ----------------------------------------------------------------------------- event intake
@@ -88,6 +96,21 @@ async def index():
 async def status():
     return {"live": _live, "corr": events.correlation_id(), "agent": _agent_info,
             "buffered": len(_current)}
+
+
+@app.get("/api/control")
+async def control_get():
+    if _control_get is None:
+        return JSONResponse({"error": "no live agent (replay-only server)"}, status_code=503)
+    return _control_get()
+
+
+@app.post("/api/control")
+async def control_set(request: Request):
+    if _control_set is None:
+        return JSONResponse({"error": "no live agent (replay-only server)"}, status_code=503)
+    changes = await request.json()
+    return _control_set(changes)
 
 
 @app.get("/api/calls")
