@@ -13,6 +13,9 @@ Endpoints
     GET  /api/calls/{name}    all events of one recorded call
     GET  /api/calls/{name}/audio   stereo WAV of that call (left caller, right agent), if recorded
     GET/POST /api/control     runtime controls of the agent (language, STT backend, endpoint, ...) - next call
+    GET  /api/db/calls        calls from the event store (outcome, turns, duration, transcript)
+    GET  /api/db/search       ?q=&kind=&hop=&corr=&limit=   full-text / filtered search over all events
+    GET  /api/db/stats        store backend, counts, size
     GET  /api/worm            WORM chain + verification result
     WS   /ws                  live stream: {"type":"hello", ...} then {"type":"event", "event": {...}}
 
@@ -49,8 +52,14 @@ _clients: set = set()
 _current: list = []            # events of the call in progress (or the last one), for late joiners
 _agent_info: dict = {}
 _live = False
+_store = None                  # agent/store.EventStore (query layer), set by the agent or opened read-only
 _control_get = None            # agent callbacks for the runtime controls (language, STT backend, ...)
 _control_set = None
+
+
+def set_store(store) -> None:
+    global _store
+    _store = store
 
 
 def set_control_handlers(get_fn, set_fn) -> None:
@@ -96,6 +105,27 @@ async def index():
 async def status():
     return {"live": _live, "corr": events.correlation_id(), "agent": _agent_info,
             "buffered": len(_current)}
+
+
+@app.get("/api/db/stats")
+async def db_stats():
+    if _store is None:
+        return JSONResponse({"error": "no event store"}, status_code=503)
+    return _store.stats()
+
+
+@app.get("/api/db/calls")
+async def db_calls(limit: int = 50, day: str | None = None):
+    if _store is None:
+        return JSONResponse({"error": "no event store"}, status_code=503)
+    return _store.list_calls(limit=limit, day=day)
+
+
+@app.get("/api/db/search")
+async def db_search(q: str = "", kind: str | None = None, hop: str | None = None, corr: str | None = None, limit: int = 100):
+    if _store is None:
+        return JSONResponse({"error": "no event store"}, status_code=503)
+    return _store.search(q, kind=kind or None, hop=hop or None, corr=corr or None, limit=min(limit, 500))
 
 
 @app.get("/api/control")
@@ -209,5 +239,10 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--host", default="0.0.0.0")
     a = ap.parse_args()
+    try:
+        from agent import settings, store as _st
+        set_store(_st.make_store(settings))
+    except Exception as e:  # noqa: BLE001
+        print(f"event store not available: {e}")
     print(f"Glass Box (replay only) on http://{a.host}:{a.port}  - Ctrl+C to stop")
     _serve(a.host, a.port, live=False)

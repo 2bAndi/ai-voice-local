@@ -10,6 +10,7 @@ Usage (venv active, project folder):
     python tests\timeline.py calls\20260904-213012_6f1c9a2b.jsonl
     python tests\timeline.py --sip            # SIP ladder only
     python tests\timeline.py --raw            # also dump raw SIP messages
+    python tests\timeline.py --slices         # include the audio-flow rows (10 x 20 ms per hop)
 """
 import json
 import sys
@@ -44,6 +45,14 @@ def short(ev) -> str:
         return f"\"{p.get('text','')[:90]}\""
     if k == "llm.prompt":
         return f"system prompt {p.get('chars')} chars · reply in {p.get('reply_language')} · tools {p.get('tools')} · {len(p.get('rules') or [])} rules · {len(p.get('guardrails') or [])} guardrails"
+    if k in ("rtp.rx", "rtp.tx"):
+        return f"{p.get('slices')} x {p.get('frame_ms')} ms · seq {p.get('seq_first')}-{p.get('seq_last')} · {'signal' if p.get('active') else 'silence'}"
+    if k == "audio.chunk":
+        return f"{p.get('slices')} x {p.get('frame_ms')} ms · {'signal' if p.get('active') else 'silence'} · peak {p.get('peak_rms')} · queued {p.get('queued')}"
+    if k == "stt.feed":
+        return f"{p.get('slices')} x {p.get('frame_ms')} ms -> {p.get('backend')} · " + (f"in utterance ({p.get('utterance_ms')} ms)" if p.get("in_speech") else "listening")
+    if k == "worm.stored":
+        return f"{p.get('record_id')} -> {p.get('file')} · {p.get('bytes')} B · fsync"
     if k == "control.changed":
         return ", ".join(f"{a}={b}" for a, b in p.items())
     if k == "stt.partial":
@@ -123,8 +132,11 @@ if "--sip" in flags:
 # ---------------------------------------------------------------- 2. timeline
 print("== Timeline")
 print(f"{'t':>8}  {'hop':<12} {'kind':<24} {'ms':>7}  detail")
+SLICE_KINDS = {"rtp.rx", "rtp.tx", "audio.chunk", "stt.feed"}
 for e in events:
     if e["kind"].startswith("sip.") and "--all" not in flags:
+        continue
+    if e["kind"] in SLICE_KINDS and "--slices" not in flags and "--all" not in flags:
         continue
     t = f"{e['t']:8.3f}" if e.get("t") is not None else "     pre"
     ms = f"{e['ms']:7.0f}" if e.get("ms") is not None else "       "
@@ -154,4 +166,5 @@ if turn:
     print(f"{turn['n']:>4} {turn.get('stt','-'):>6} {turn.get('tok','-'):>12} {turn.get('tts','-'):>8} {turn.get('audio','-'):>10}   {turn.get('text','')[:60]}")
 
 hops = sorted({e["hop"] for e in events})
-print(f"\nHops seen: {', '.join(hops)}")
+n_sl = sum(1 for e in events if e["kind"] in SLICE_KINDS)
+print(f"\nHops seen: {', '.join(hops)}" + (f"   ({n_sl} audio-flow rows hidden, --slices shows them)" if n_sl and "--slices" not in flags else ""))

@@ -47,6 +47,7 @@ from ollama import chat  # noqa: E402
 from agent import gateway  # noqa: E402  (tool gateway: confirm gate + WORM + bank mock)
 from agent import recorder  # noqa: E402  (per-call stereo WAV for the Glass Box player)
 from agent import stt_stream  # noqa: E402  (streaming STT: 20 ms slices in, partials out)
+from agent import store as event_store  # noqa: E402  (query layer under the event stream)
 
 MODEL = settings.LLM_MODEL
 
@@ -84,6 +85,7 @@ STT_VOCAB = {"en": "Demo Bank card security line. Visa, Mastercard, credit card,
              "de": "Demo Bank Kartensperr-Hotline. Visa, Mastercard, Kreditkarte, verloren, gestohlen, Betrug, beschaedigt, gesperrt, ja, nein, richtig.",
              "da": "Demo Bank kortspaerring. Visa, Mastercard, kreditkort, mistet, stjaalet, svindel, beskadiget, spaerret, ja, nej, korrekt."}
 LANG_DETECT_TURNS = 2           # try on the first N caller utterances, stop after a switch
+SLICE_BATCH = 10                # Glass Box: one audio-flow event per 10 slices (200 ms) per hop
 
 
 def voice_available(lang: str) -> bool:
@@ -723,11 +725,21 @@ def load_typing_clips(n: int = 6) -> list[bytes]:
 
 TYPING_CLIPS = load_typing_clips()
 
+# Event store under the data flow: every event also lands in the store (SQLite now, DynamoDB later).
+try:
+    STORE = event_store.make_store(settings)
+    events.subscribe(STORE.on_event)
+    print(f"Event store: {STORE.name} ({STORE.stats().get('path') or STORE.stats().get('table')})")
+except Exception as e:  # noqa: BLE001 - the store is optional, the JSONL files stay the raw stream
+    STORE = None
+    print(f"Event store not started ({e}) - events are still written to calls\\*.jsonl")
+
 # Glass Box page (Phase 2): served from this process so it sees the live events.
 if settings.GLASSBOX_PORT:
     try:
         from glassbox import server as glassbox_server
         glassbox_server.set_control_handlers(get_control, apply_control)
+        glassbox_server.set_store(STORE)
         glassbox_server.start_in_background(settings.GLASSBOX_PORT)
         print(f"Glass Box: http://{socket.gethostbyname(socket.gethostname())}:{settings.GLASSBOX_PORT}  "
               f"(any browser in the LAN)")
@@ -796,6 +808,7 @@ def handle_call(call):
     first_audio_reported = [True]
     rec = recorder.CallRecorder(events.call_t0())     # stereo WAV: left caller, right agent
     rec_file = events.call_file()
+    rx_batch = [0, 0]                                 # slices, peak rms since the last audio.chunk event
 
     def reader():
         next_t = time.time()
@@ -807,6 +820,13 @@ def handle_call(call):
                 break
             audio_in.append(chunk)
             rec.add(0, chunk, time.time())
+            rx_batch[0] += 1
+            rx_batch[1] = max(rx_batch[1], audioop.rms(chunk, 2) if chunk else 0)
+            if rx_batch[0] >= SLICE_BATCH:
+                events.emit("SP-A→SP-B", "audio.chunk", {"slices": rx_batch[0], "frame_ms": 20, "bytes": rx_batch[0] * len(chunk),
+                                                         "peak_rms": rx_batch[1], "active": rx_batch[1] > 150,
+                                                         "queued": len(audio_in)})
+                rx_batch[0], rx_batch[1] = 0, 0
             time.sleep(max(0.0, next_t - time.time()))
 
     def speaker():
@@ -873,14 +893,22 @@ def handle_call(call):
             spec_thread = None
             final = None
             n_partials = 0
+            feed_batch = [0]
             while call.state == CallState.ANSWERED and final is None:
                 if not audio_in:
                     time.sleep(0.005)
                     continue
                 chunk = audio_in.popleft()
+                feed_batch[0] += 1
+                if feed_batch[0] >= SLICE_BATCH:
+                    events.emit("SP-B→SP-C", "stt.feed", {"slices": feed_batch[0], "frame_ms": 20,
+                                                          "in_speech": stt_engine._in_speech,
+                                                          "utterance_ms": int(len(stt_engine._utt) / 16),
+                                                          "backend": stt_engine.name})
+                    feed_batch[0] = 0
                 for r in stt_engine.feed(chunk):
                     if r.kind == "speech_start":
-                        events.emit("SP-A→SP-B", "vad.start", {"backend": r.backend, "vad": "silero"})
+                        events.emit("SP-B→SP-C", "vad.start", {"backend": r.backend, "vad": "silero"})
                     elif r.kind == "partial":
                         n_partials += 1
                         events.emit("SP-B→SP-C", "stt.partial", {"text": r.text, "stable": r.stable,
@@ -901,7 +929,7 @@ def handle_call(call):
                     elif r.kind == "endpoint":
                         turn_t0[0] = time.time()
                         first_audio_reported[0] = False
-                        events.emit("SP-A→SP-B", "vad.utterance", {"audio_ms": r.audio_ms, "turn": user_turns + 1,
+                        events.emit("SP-B→SP-C", "vad.utterance", {"audio_ms": r.audio_ms, "turn": user_turns + 1,
                                                                    "endpoint": "silero vad", "silence_ms": r.silence_ms})
                         events.emit("SP-B→SP-C", "stt.endpoint", {"silence_ms": r.silence_ms, "backend": r.backend})
                     elif r.kind == "final":

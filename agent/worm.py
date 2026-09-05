@@ -65,6 +65,8 @@ def append(data: dict) -> dict:
             FAIL_NEXT = False
             events.emit("GATE→WORM", "worm.write_failed", {"phase": data.get("phase"), "action": data.get("action")})
             raise WormWriteError("WORM write failed (injected)")
+        events.emit("GATE→WORM", "worm.write", {"phase": data.get("phase"), "action": data.get("action"),
+                                                "corr": data.get("corr")})
         n, prev = _last()
         record = {"record_id": f"WORM-{n + 1:06d}", "ts": round(time.time(), 3), "prev": prev, **data}
         record["hash"] = _digest({k: v for k, v in record.items() if k != "hash"})
@@ -72,6 +74,9 @@ def append(data: dict) -> dict:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
+    events.emit("WORM→STORE", "worm.stored", {"record_id": record["record_id"], "file": WORM_FILE.name,
+                                              "bytes": len(json.dumps(record, ensure_ascii=False)) + 1,
+                                              "fsync": True, "phase": data.get("phase")})
     ack = {"record_id": record["record_id"], "hash": record["hash"], "prev": prev, "ts": record["ts"]}
     events.emit("GATE→WORM", "worm.ack", {**ack, "phase": data.get("phase"), "action": data.get("action"),
                                         "corr": data.get("corr")}, ms=(time.time() - t0) * 1000)

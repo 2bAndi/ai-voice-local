@@ -28,6 +28,14 @@ calls are held until the final confirms the text (`llm.speculative.*` events), o
 turn is discarded and re-run. Offline check with a recorded call:
 `python tests\test_stt_stream.py calls\<file>.wav [whisper|sherpa] [--realtime]`.
 
+**Event store.** Every event also lands in a query layer under the data flow (`agent/store.py`):
+a DynamoDB single-table model (PK `CALL#<corr>`, SK `EV#<seq>` / `META`, GSI1 by kind + time, GSI2
+by day) with two backends behind one interface — `sqlite` (`calls\glassbox.db`, no install, FTS5
+full-text search; default) and `dynamodb` (boto3 against AWS or DynamoDB Local, same items and
+keys). The JSONL file per call stays the raw stream. The page has a "Search · event store" panel
+whose hits open the call in replay at that event; API: `/api/db/calls`, `/api/db/search`,
+`/api/db/stats`. Import older call files: `python -m agent.store --import`.
+
 **Runtime controls.** The Glass Box page has an "Agent controls" panel (language, STT backend,
 endpoint, speculative LLM, auto-detect, canonical English) that changes the agent for the next
 call without a restart (`GET/POST /api/control`); `config.ini` only sets the start values. With

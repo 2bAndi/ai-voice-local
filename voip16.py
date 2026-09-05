@@ -69,6 +69,7 @@ def _trans(self):
             self.sout.sendto(packet, (self.outIP, self.outPort))
         except OSError:
             pass
+        _count_tx(self, payload)
         self.outSequence += 1
         self.outTimestamp += len(payload)  # samples == bytes in the encoded payload
         delay = (1 / self.preference.rate) * 160
@@ -221,13 +222,56 @@ _orig_parse_packet = RTPClient.parse_packet
 _orig_trans = _trans
 
 
+SLICE_BATCH = 10        # Glass Box: one event per 10 RTP frames (= 200 ms) per direction
+
+
+def _count_tx(self, payload):
+    """SP-A -> Avaya: every packet we send, reported in batches of SLICE_BATCH."""
+    if _ev is None:
+        return
+    b = self.__dict__.setdefault("_gb_tx", {"n": 0, "first": None, "active": False})
+    if b["n"] == 0:
+        b["first"] = self.outSequence
+    b["n"] += 1
+    if any(payload):                     # 0x00 padding = nothing queued (silence)
+        b["active"] = True
+    if b["n"] >= SLICE_BATCH:
+        _ev.emit("SP-A→AVAYA", "rtp.tx", {"slices": b["n"], "frame_ms": 20, "seq_first": b["first"],
+                                           "seq_last": self.outSequence, "bytes": b["n"] * (12 + len(payload)),
+                                           "active": b["active"], "to": f"{self.outIP}:{self.outPort}"})
+        b.update(n=0, first=None, active=False)
+
+
+def _count_rx(self, packet):
+    """Avaya -> SP-A: every RTP frame that arrives, reported in batches of SLICE_BATCH."""
+    if _ev is None or len(packet) < 12:
+        return
+    b = self.__dict__.setdefault("_gb_rx", {"n": 0, "first": None, "peak": 0})
+    seq = int.from_bytes(packet[2:4], "big")
+    if b["n"] == 0:
+        b["first"] = seq
+    b["n"] += 1
+    try:
+        pt = packet[1] & 0x7F
+        lin = audioop.ulaw2lin(packet[12:], 2) if pt == 0 else audioop.alaw2lin(packet[12:], 2)
+        b["peak"] = max(b["peak"], audioop.rms(lin, 2))
+    except Exception:
+        pass
+    if b["n"] >= SLICE_BATCH:
+        _ev.emit("AVAYA→SP-A", "rtp.rx", {"slices": b["n"], "frame_ms": 20, "seq_first": b["first"], "seq_last": seq,
+                                           "bytes": b["n"] * len(packet), "peak_rms": b["peak"],
+                                           "active": b["peak"] > 150, "from": f"{self.outIP}:{self.outPort}"})
+        b.update(n=0, first=None, peak=0)
+
+
 def _tap_parse_packet(self, packet):
+    _count_rx(self, packet)
     if not getattr(self, "_gb_rx_seen", False):
         self._gb_rx_seen = True
         if _ev is not None:
             pt = packet[1] & 0x7F
             ssrc = int.from_bytes(packet[8:12], "big")
-            _ev.emit("SP-A→SP-B", "rtp.rx.first",
+            _ev.emit("AVAYA→SP-A", "rtp.rx.first",
                      {"payload_type": pt, "codec": str(self.assoc.get(pt, "?")), "ssrc": ssrc,
                       "from": f"{self.outIP}:{self.outPort}", "to_port": self.inPort,
                       "bytes": len(packet), "frame_ms": 20})
@@ -236,7 +280,7 @@ def _tap_parse_packet(self, packet):
 
 def _tap_trans(self):
     if _ev is not None:
-        _ev.emit("SP-B→SP-A", "rtp.tx.start",
+        _ev.emit("SP-A→AVAYA", "rtp.tx.start",
                  {"codec": str(self.preference), "to": f"{self.outIP}:{self.outPort}",
                   "ssrc": self.outSSRC, "frame_ms": 20, "bytes_per_frame": 160})
     return _orig_trans(self)

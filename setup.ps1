@@ -66,7 +66,7 @@ Step "pip packages"
 # CUDA 12 runtime libs as pip wheels (cuBLAS + cuDNN 9) - no separate CUDA toolkit install needed.
 & $py -m pip install --upgrade `
     "faster-whisper>=1.1" nvidia-cublas-cu12 nvidia-cudnn-cu12 `
-    piper-tts "pyVoIP<2" scipy numpy sounddevice ollama sherpa-onnx `
+    piper-tts "pyVoIP<2" scipy numpy sounddevice ollama sherpa-onnx boto3 `
     fastapi uvicorn websockets `
     caldav radicale
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed (see above)." }

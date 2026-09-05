@@ -37,7 +37,11 @@ input[type=range]{width:170px;accent-color:var(--real)}
 .corr{font-family:var(--mono);font-size:11px;color:var(--dim)}
 main{display:grid;grid-template-columns:1fr 360px;grid-template-rows:minmax(0,1fr);height:calc(100% - 48px)}
 .left{display:grid;grid-template-rows:auto 6px minmax(0,1fr) 6px 200px;min-width:0;border-right:1px solid var(--line)}
-.right{display:grid;grid-template-rows:auto 6px auto 6px auto 6px minmax(0,1fr) 6px minmax(0,1fr);min-width:0}
+.right{display:grid;grid-template-rows:auto 6px auto 6px auto 6px minmax(0,1fr) 6px minmax(0,1fr) 6px 230px;min-width:0}
+#srch .bar{display:flex;gap:6px;margin-bottom:6px} #srch input[type=text]{flex:1;min-width:0;background:var(--panel-2);border:1px solid var(--line-2);border-radius:4px;padding:4px 8px;font-family:var(--mono);font-size:11.5px}
+#srch .res{font-family:var(--mono);font-size:11px;display:grid;grid-template-columns:auto auto 1fr;gap:2px 10px;cursor:pointer;padding:2px 0;border-bottom:1px solid var(--line)} #srch .res:hover{background:var(--panel-2)}
+#srch .res .c{color:var(--dim)} #srch .res .k{color:var(--real)} #srch .res .d{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#srch .empty{color:var(--dim);font-family:var(--mono);font-size:11px}
 #ctl .kv{grid-template-columns:130px 1fr}
 #ctl .kv select{padding:2px 6px;font-size:11.5px}
 #ctl .msg{grid-column:1/-1;font-family:var(--mono);font-size:11px;color:var(--dim)}
@@ -68,12 +72,15 @@ body.dragging *{user-select:none!important}
 .box.bad rect{stroke:var(--bad);fill:rgba(224,96,96,.14);filter:drop-shadow(0 0 6px var(--bad))}
 .edge{fill:none;stroke:var(--line-2);stroke-width:1.6}
 .edge.hot{stroke:var(--real);stroke-width:2.6;filter:drop-shadow(0 0 4px var(--real))}
+.edge.flow{stroke:var(--muted);stroke-width:2.2}
+.box.flow rect{stroke-width:1.8;fill:rgba(255,255,255,.03)}
 .edge.hot.mockhot{stroke:var(--mock);filter:drop-shadow(0 0 4px var(--mock))}
 .edge.bad{stroke:var(--bad);stroke-width:2.6;filter:drop-shadow(0 0 4px var(--bad))}
 .edge.dashed{stroke-dasharray:5 4}
 .box.sel rect{stroke:#FFFFFF;stroke-width:2.2;fill:rgba(255,255,255,.08)}
 .edge.sel{stroke:#FFFFFF;stroke-width:2.6}
 .row-sel{background:rgba(255,255,255,.08)!important;outline:1px solid var(--line-2)}
+.seqrow.slice .arr-t{fill:var(--dim)} .seqrow.slice .arr{stroke:var(--line-2);stroke-width:1.2}
 .seqrow{cursor:pointer} .seqrow:hover rect.hit{fill:rgba(255,255,255,.04)}
 rect.hit{fill:transparent}
 #detail{border-top:1px solid var(--line);background:var(--panel);padding:6px 12px;font-family:var(--mono);font-size:11px;display:grid;grid-template-columns:1fr;gap:2px}
@@ -147,7 +154,7 @@ pre.raw b{color:var(--ink);font-weight:500}
     </section>
     <div class="gutter" title="drag to resize"></div>
     <section data-flex>
-      <div class="sec-h">Sequence · every hop of this call <span class="n" id="seqn"></span></div>
+      <div class="sec-h">Sequence · every hop of this call <label style="margin-left:14px;letter-spacing:0;text-transform:none;cursor:pointer"><input type="checkbox" id="slices" checked> audio slices (10 × 20 ms per row)</label><span class="n" id="seqn"></span></div>
       <div class="body" id="seqwrap"><svg id="seq" width="100%" height="40"></svg></div>
     </section>
     <div class="gutter" title="drag to resize"></div>
@@ -198,6 +205,14 @@ pre.raw b{color:var(--ink);font-weight:500}
     <section>
       <div class="sec-h">SIP inspector · FRITZ!Box ⇄ agent <span class="n" id="sipn"></span></div>
       <div class="body sip"><div id="siplist"></div><pre class="raw" id="sipraw" hidden></pre></div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section id="srch">
+      <div class="sec-h">Search · event store <span class="n" id="srchn"></span></div>
+      <div class="body">
+        <div class="bar"><input type="text" id="q" placeholder="text in transcripts, tool args, results, SIP … (prefix match)"><select id="qkind"><option value="">any kind</option></select><button id="qgo">search</button></div>
+        <div id="qres"><div class="empty">results open the call in replay at that event</div></div>
+      </div>
     </section>
   </div>
 </main>
@@ -258,10 +273,10 @@ const EDGES = {
   "bifrost-spb":  "M590,148 L590,168",
 };
 const DASHED = new Set(["avaya-spe","spd-spe","worm-bpm","bifrost-pch","bifrost-spb","avaya-mb"]);
-const HOP2EDGE = {"AVAYA→SP-A":"avaya-spa","SP-A→SP-B":"spa-spb","SP-B→SP-A":"spa-spb","SP-B→SP-C":"spb-spc","SP-C→SP-B":"spb-spc",
+const HOP2EDGE = {"AVAYA→SP-A":"avaya-spa","SP-A→AVAYA":"avaya-spa","WORM→STORE":"worm-store","SP-A→SP-B":"spa-spb","SP-B→SP-A":"spa-spb","SP-B→SP-C":"spb-spc","SP-C→SP-B":"spb-spc",
   "SP-C→SP-D":null,"SP-D→SP-C":null,"SP-D→GW":"spd-gw","GW→SP-D":"spd-gw","GW→READ":"gw-read","READ→GW":"gw-read","GW→GATE":"gw-gate","GATE→WORM":"gate-worm","WORM→BPM":"worm-bpm","BPM→BANK":"bpm-bank","BANK→SOR":"bank-sor","WORM→BANK":"bpm-bank",
   "GW→WORM":"gate-worm","GW→BANK":"gw-read","SP-D→SP-E":"spd-spe","CALLER→AVAYA":"caller-avaya"};
-const HOP2BOX = {"AVAYA→SP-A":["avaya","spa"],"SP-A→SP-B":["spa","spb"],"SP-B→SP-A":["spb","spa"],"SP-B→SP-C":["spb","spc"],"SP-C→SP-B":["spc","spb"],
+const HOP2BOX = {"AVAYA→SP-A":["avaya","spa"],"SP-A→AVAYA":["spa","avaya"],"WORM→STORE":["worm","wormstore"],"SP-A→SP-B":["spa","spb"],"SP-B→SP-A":["spb","spa"],"SP-B→SP-C":["spb","spc"],"SP-C→SP-B":["spc","spb"],
   "SP-C→SP-D":["spc"],"SP-D→SP-C":["spc"],"SP-D→GW":["spc","gw"],"GW→SP-D":["gw","spc"],"GW→READ":["gw","read"],"READ→GW":["read","gw"],"GW→GATE":["gw","gate"],"GATE→WORM":["gate","worm"],"WORM→BPM":["worm","bpm"],"BPM→BANK":["bpm","bank"],"BANK→SOR":["bank","sor"],"WORM→BANK":["bpm","bank"],
   "GW→WORM":["gate","worm"],"GW→BANK":["gw","read"],"SP-D→SP-E":["spc","psbc","pch"],"AGENT":["spc"]};
 const svgNS = "http://www.w3.org/2000/svg";
@@ -304,30 +319,22 @@ function hold(id, cls, ms){             // playback semantics: queue behind what
   hotTimers[id+cls]=setTimeout(()=>{ e.classList.remove(cls); hotUntil[id+cls]=0; }, end-Date.now());
 }
 function release(ids, cls){ for(const id of ids){ const e=document.getElementById(id); if(e){ e.classList.remove(cls); hotUntil[id+cls]=0; clearTimeout(hotTimers[id+cls]); } } }
-const OUT_PATH = ["e-spb-spc","b-spb","e-spa-spb","b-spa","e-avaya-spa","b-avaya","e-carrier-sbc","b-carrier","e-caller-avaya","b-caller"];   // agent audio → ear
-const IN_PATH  = ["b-caller","e-caller-avaya","b-carrier","e-carrier-sbc","b-avaya","e-avaya-spa","b-spa","e-spa-spb","b-spb"];             // caller voice → VAD
 function involved(ev){
-  const p=ev.payload||{}, k=ev.kind;
+  // one event = one hop: exactly the sender, the receiver and the edge between them.
+  // Nothing beyond what was observed (the carrier and the caller's phone are never lit by us).
   let edges=[], boxes=[];
   const e=HOP2EDGE[ev.hop]; if(e) edges.push("e-"+e);
   for(const b of (HOP2BOX[ev.hop]||[])) boxes.push("b-"+b);
-  if(k.startsWith("sip.")||k==="rtp.rx.first"||k==="rtp.tx.start"){ boxes.push("b-caller","b-carrier","b-avaya"); edges.push("e-caller-avaya","e-carrier-sbc"); }
-  if(k==="rtp.write"||k==="tts.greeting"){ boxes=OUT_PATH.filter(x=>x.startsWith("b-")); edges=OUT_PATH.filter(x=>x.startsWith("e-")); }
-  if(k==="vad.start"||k==="vad.utterance"||k==="vad.level"){ boxes=IN_PATH.filter(x=>x.startsWith("b-")); edges=IN_PATH.filter(x=>x.startsWith("e-")); }
-  if(k==="stt.done"||k==="llm.sentence"||k==="stt.partial") boxes.push("b-convlog");
-  if(k==="turn.first_audio") boxes.push("b-latency");
-  if(k==="worm.ack"){ boxes.push("b-wormstore"); edges.push("e-worm-store"); }
-  if(k==="bank.card_blocked"){ boxes.push("b-sor"); edges.push("e-bank-sor"); }
-  boxes.push("b-evlog");
   return {edges:[...new Set(edges)], boxes:[...new Set(boxes)]};
 }
 function mapEvent(ev){
   const p=ev.payload||{};
-  if(ev.kind==="rtp.write"){ for(const id of OUT_PATH) hold(id,"hot",p.audio_ms||0); pulse("b-evlog","hot",300); return; }
-  if(ev.kind==="tts.greeting") return;
-  if(ev.kind==="vad.start"){ for(const id of IN_PATH) pulse(id,"hot",15000); return; }
-  if(ev.kind==="vad.utterance"){ release(IN_PATH,"hot"); }
-  if(ev.kind==="vad.level"){ if(p.speech) for(const id of IN_PATH) pulse(id,"hot",3000); return; }
+  if(SLICE_KINDS.has(ev.kind)){
+    // audio flow: 10 slices = 200 ms on this one hop; "hot" while there is signal, "flow" for silence frames
+    const inv=involved(ev), cls=(p.active||p.in_speech)?"hot":"flow";
+    for(const id of [...inv.edges,...inv.boxes]) pulse(id, cls, 260);
+    return;
+  }
   const bad = /rejected|refused|write_failed|failed|suppressed/.test(ev.kind) || (ev.payload && ev.payload.ok===false);
   const isMock = /SP-E|BANK|READ|BPM|SOR/.test(ev.hop);
   const inv=involved(ev);
@@ -363,9 +370,11 @@ document.addEventListener("keydown",(e)=>{ if(focusIdx<0||document.activeElement
   if(e.key==="ArrowUp"){ e.preventDefault(); focusEvent(Math.max(0,focusIdx-1)); } });
 
 /* ------------------------------------------------------------------ sequence diagram */
-const LANES = ["Caller","Avaya","SP-E","SP-A","SP-B","SP-C","SP-D","GW","READ","GATE","WORM","BANK"];
-const LANE_OF = {"CALLER":0,"AVAYA":1,"SP-E":2,"SP-A":3,"SP-B":4,"SP-C":5,"SP-D":6,"GW":7,"READ":8,"GATE":9,"WORM":10,"BANK":11,"AGENT":6};
-let seqRows=0; const SEQ_W=1100, LANE_X=(i)=>60+i*(SEQ_W-120)/(LANES.length-1), ROW_H=22, SEQ_TOP=26, SEQ_MAX=600;
+const LANES = ["Caller","Avaya","SP-E","SP-A","SP-B","SP-C","SP-D","GW","READ","GATE","WORM","BPM","BANK","SOR"];
+const LANE_OF = {"CALLER":0,"AVAYA":1,"SP-E":2,"SP-A":3,"SP-B":4,"SP-C":5,"SP-D":6,"GW":7,"READ":8,"GATE":9,"WORM":10,"STORE":10,"BPM":11,"BANK":12,"SOR":13,"AGENT":6};
+const SLICE_KINDS = new Set(["rtp.rx","rtp.tx","audio.chunk","stt.feed"]);   // audio flow, one row per 10 slices
+let showSlices=true;
+let seqRows=0; const SEQ_W=1100, LANE_X=(i)=>60+i*(SEQ_W-120)/(LANES.length-1), ROW_H=22, SEQ_TOP=26, SEQ_MAX=6000;
 function seqReset(){
   const s=document.getElementById("seq"); s.innerHTML=""; seqRows=0;
   s.setAttribute("viewBox",`0 0 ${SEQ_W} ${SEQ_TOP+ROW_H}`); s.setAttribute("height", SEQ_TOP+ROW_H);
@@ -374,7 +383,8 @@ function seqReset(){
 }
 function seqEvent(ev, idx){
   if(ev.hop==="AGENT" && !/guardrail|call\./.test(ev.kind)) return;
-  if(ev.kind==="gw.validate" || ev.kind==="rtp.write" || ev.kind==="filler.typing" || ev.kind==="vad.level") return;
+  if(ev.kind==="gw.validate" || ev.kind==="vad.level") return;
+  if(SLICE_KINDS.has(ev.kind) && !showSlices) return;
   if(seqRows>=SEQ_MAX) return;
   const s=document.getElementById("seq");
   const [a,b] = ev.hop==="AGENT" ? ["AGENT","AGENT"] : ev.hop.split("→");
@@ -385,7 +395,7 @@ function seqEvent(ev, idx){
   const bad = /rejected|refused|write_failed|failed|suppressed/.test(ev.kind) || (ev.payload&&ev.payload.ok===false);
   if(ev.kind==="speech.switch") pulse("b-spb","hot",1500);
   const cls = "arr"+(bad?" badarr":/GATE|WORM/.test(ev.hop)?" amberarr":/SP-E|BANK|READ/.test(ev.hop)?" mockarr":"");
-  const g=el("g",{class:"seqrow","data-idx":idx}); g.dataset.idx=idx; g.onclick=()=>focusEvent(idx);
+  const g=el("g",{class:"seqrow"+(SLICE_KINDS.has(ev.kind)?" slice":""),"data-idx":idx}); g.dataset.idx=idx; g.onclick=()=>focusEvent(idx);
   g.appendChild(el("rect",{class:"hit",x:0,y:y-ROW_H/2,width:SEQ_W,height:ROW_H}));
   if(xa!==xb){
     g.appendChild(el("path",{class:cls,d:`M${xa},${y} L${xb},${y}`}));
@@ -408,6 +418,11 @@ function shortDetail(ev){
   if(k==="stt.done") return '"'+(p.text||"").slice(0,70)+'"  · lang '+(p.language||"?")+(p.language_mode?" ("+p.language_mode+")":"")+(p.backend?" · "+p.backend:"")+(p.partials!=null?" · "+p.partials+" partials":"")+(p.translated_to_en?" · translated → en":"");
   if(k==="llm.sentence") return '"'+(p.text||"").slice(0,80)+'"';
   if(k==="llm.prompt") return p.update ? "system prompt updated · "+p.update+" · reply in "+p.reply_language : "system prompt "+p.chars+" chars · reply in "+p.reply_language+" · "+(p.tools||[]).length+" tools · "+(p.rules||[]).length+" rules · "+(p.guardrails||[]).length+" guardrails";
+  if(k==="rtp.rx"||k==="rtp.tx") return p.slices+" × "+p.frame_ms+" ms · seq "+p.seq_first+"–"+p.seq_last+" · "+p.bytes+" B"+(p.active?" · signal":" · silence")+(p.peak_rms!=null?" · peak "+p.peak_rms:"");
+  if(k==="audio.chunk") return p.slices+" × "+p.frame_ms+" ms → session controller · "+(p.active?"signal":"silence")+" · peak "+p.peak_rms+" · queued "+p.queued;
+  if(k==="stt.feed") return p.slices+" × "+p.frame_ms+" ms → "+p.backend+(p.in_speech?" · in utterance ("+p.utterance_ms+" ms)":" · listening");
+  if(k==="worm.write") return "append "+p.phase+" record";
+  if(k==="worm.stored") return p.record_id+" → "+p.file+" · "+p.bytes+" B · fsync";
   if(k==="control.changed") return Object.entries(p).filter(([a])=>a!=="applies").map(([a,b])=>a+"="+b).join(", ")+" · next call";
   if(k==="stt.partial") return (p.stable?"STABLE ":"partial #"+p.n+" ")+'"'+(p.text||"").slice(0,80)+'"'+(p.stable?" · caller paused":"");
   if(k==="stt.endpoint") return "utterance ended · "+p.silence_ms+" ms pause · "+p.backend;
@@ -533,7 +548,7 @@ function connect(){
   ws.onmessage=(m)=>{
     const msg=JSON.parse(m.data);
     if(msg.type==="hello"){ if(replay) return; resetAll(); setMode(msg.live?"live":"replay-only server", msg.corr); (msg.current||[]).forEach(e=>handle(e,false)); }
-    else if(msg.type==="event"){ if(replay) return; if(msg.event.kind==="call.start") { resetAll(); } if(msg.event.kind==="call.end") { setTimeout(loadCalls, 1500); } setMode("live", msg.event.corr||document.getElementById("corr").textContent.replace("corr ","")); handle(msg.event,true); }
+    else if(msg.type==="event"){ if(replay) return; if(msg.event.kind==="call.start") { resetAll(); } if(msg.event.kind==="call.end") { setTimeout(loadCalls, 1500); setTimeout(loadSearchMeta, 2500); } setMode("live", msg.event.corr||document.getElementById("corr").textContent.replace("corr ","")); handle(msg.event,true); }
   };
   ws.onclose=()=>{ if(!replay) setMode("disconnected — retrying"); setTimeout(connect,2000); };
 }
@@ -643,6 +658,43 @@ document.querySelectorAll("#ctl select").forEach(sel=>{ sel.onchange=async()=>{
     renderControls(c); if(c.ok===false){ msg.classList.add("err"); msg.textContent=c.error; } else { msg.textContent="saved: "+k+" = "+v+" · applies to the next call"; } }
   catch(e){ msg.classList.add("err"); msg.textContent="control failed: "+e; }
 }; });
+document.getElementById("slices").onchange=(e)=>{ showSlices=e.target.checked; if(replay) seek(replay.i); };
+// ---- search over the event store (SQLite now, DynamoDB later): results jump into the replay
+let callFiles={};
+async function loadSearchMeta(){
+  try{ const st=await (await fetch("/api/db/stats")).json(); if(st.error) throw new Error(st.error);
+    const sel=document.getElementById("qkind"); (st.kinds||[]).forEach(k=>{ const o=document.createElement("option"); o.value=k.kind; o.textContent=k.kind+" ("+k.n+")"; sel.appendChild(o); });
+    document.getElementById("srchn").textContent=st.backend+" · "+st.events+" events · "+st.calls+" calls"+(st.size_mb?" · "+st.size_mb+" MB":"");
+    const calls=await (await fetch("/api/db/calls?limit=500")).json(); for(const c of calls) callFiles[c.corr]=c.file;
+  }catch(e){ document.getElementById("srchn").textContent="no event store"; document.getElementById("qres").innerHTML='<div class="empty">event store not available ('+esc(String(e.message||e))+')</div>'; }
+}
+async function runSearch(){
+  const q=document.getElementById("q").value, kind=document.getElementById("qkind").value, box=document.getElementById("qres");
+  box.innerHTML='<div class="empty">searching…</div>';
+  try{ const r=await (await fetch("/api/db/search?q="+encodeURIComponent(q)+"&kind="+encodeURIComponent(kind)+"&limit=200")).json();
+    if(r.error) throw new Error(r.error);
+    box.innerHTML="";
+    if(!r.count){ box.innerHTML='<div class="empty">no match</div>'; return; }
+    for(const ev of r.results){
+      const d=document.createElement("div"); d.className="res"; d.title=JSON.stringify(ev.payload||{});
+      const when=new Date((ev.ts||0)*1000); const hh=when.toTimeString().slice(0,8), dd=when.toISOString().slice(5,10);
+      d.innerHTML=`<span class="c">${dd} ${hh} · ${(ev.corr||"").slice(0,8)} · ${fmtT(ev.t)}</span><span class="k">${esc(ev.kind)}</span><span class="d">${esc(shortDetail(ev))}</span>`;
+      d.onclick=()=>openAt(ev);
+      box.appendChild(d);
+    }
+    const n=document.getElementById("srchn"); n.textContent=r.count+" hits · "+r.backend+(r.full_text?" · full-text":" · substring filter");
+  }catch(e){ box.innerHTML='<div class="empty">'+esc(String(e.message||e))+'</div>'; }
+}
+async function openAt(ev){
+  const file=callFiles[ev.corr]; if(!file){ alert("no call file known for "+ev.corr); return; }
+  const sel=document.getElementById("callsel"); if(![...sel.options].some(o=>o.value===file)) await loadCalls();
+  sel.value=file; document.getElementById("speed").value="0";
+  await startReplay(file);
+  const i=replay.evs.findIndex(e=>e.seq===ev.seq); if(i>=0) seek(i+1);
+}
+document.getElementById("qgo").onclick=runSearch;
+document.getElementById("q").addEventListener("keydown",e=>{ if(e.key==="Enter") runSearch(); });
+loadSearchMeta();
 loadControls();
 initResizable(document.querySelector(".left"),"gb.rows.left");
 initResizable(document.querySelector(".right"),"gb.rows.right");

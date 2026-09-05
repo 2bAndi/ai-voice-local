@@ -24,6 +24,9 @@ Everything that differs between machines lives here, resolved at import time:
         [glassbox]
         port = 8080          ; 0 = do not start the Glass Box page
 
+        [store]
+        backend = sqlite     ; or dynamodb
+
 config.ini search order (first hit wins):
   1. <project>\config.ini                             (git-ignored; default on AI-2)
   2. %USERPROFILE%\Code\voiceagent-local\config.ini   (legacy location on the first machine)
@@ -54,6 +57,11 @@ DEFAULTS = {
     "language_detect": "true",
     "speculative": "true",
     "canonical_english": "true",
+    "backend": "sqlite",
+    "sqlite_path": "calls/glassbox.db",
+    "dynamodb_table": "glassbox-events",
+    "dynamodb_region": "eu-central-1",
+    "dynamodb_endpoint": "",
     "port": "8080",
 }
 
@@ -116,6 +124,13 @@ SPECULATIVE = _get("agent", "speculative").strip().lower() in ("1", "true", "yes
 # in the caller's language.
 CANONICAL_ENGLISH = _get("agent", "canonical_english").strip().lower() in ("1", "true", "yes", "on")
 GLASSBOX_PORT = int(_get("glassbox", "port"))      # 0 disables the page
+# Event store under the data flow (agent/store.py): "sqlite" (local file, full-text search) or
+# "dynamodb" (boto3 - AWS or DynamoDB Local via dynamodb_endpoint). Same single-table data model.
+STORE_BACKEND = _get("store", "backend").strip().lower()
+SQLITE_PATH = _get("store", "sqlite_path")
+DYNAMODB_TABLE = _get("store", "dynamodb_table")
+DYNAMODB_REGION = _get("store", "dynamodb_region")
+DYNAMODB_ENDPOINT = _get("store", "dynamodb_endpoint").strip()
 
 # Ollama request options shared by every chat() call
 OLLAMA_OPTIONS = {"num_ctx": NUM_CTX, "temperature": 0.3}
