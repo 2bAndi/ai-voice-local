@@ -9,7 +9,6 @@ Usage:
 Cross-check after the call:
     python tests\test_whisper.py   (picks up audio\call_last.wav automatically)
 """
-import configparser
 import os
 import queue
 import socket
@@ -30,43 +29,19 @@ PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 
 
-def add_cuda_dlls():
-    nvidia = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
-    for sub in ("cublas", "cudnn"):
-        p = nvidia / sub / "bin"
-        if p.exists():
-            os.add_dll_directory(str(p))
-            os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+from agent import settings  # noqa: E402  (registers the CUDA DLL dirs first)
+import voip16  # noqa: F401,E402  (patches pyVoIP to 16 bit, pins PCMU)
+from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError  # noqa: E402
 
-
-add_cuda_dlls()
-
-import voip16  # noqa: F401  (patches pyVoIP to 16 bit, pins PCMU)
-from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
-from faster_whisper import WhisperModel
-
-CONFIG_CANDIDATES = [
-    Path(r"C:\Users\broic\Code\voiceagent-local\config.ini"),
-    PROJECT / "config.ini",
-]
 GREETING = PROJECT / "audio" / "greeting_8k.wav"
 RECORDING = PROJECT / "audio" / "call_last.wav"
 
-LANGUAGE = "en"            # STT language of the caller (en, de, da, ...)
+LANGUAGE = settings.LANGUAGE   # STT language of the caller (config.ini [agent])
 END_SILENCE_S = 0.8
 MIN_SPEECH_S = 0.15        # keep short confirmations ("yes, exactly")
 PREROLL_S = 0.3            # pre-roll so soft word onsets are not clipped
 CHUNK_BYTES = 320          # 20 ms at 8 kHz, 16 bit
 CHUNK_S = 0.02
-
-
-def load_config():
-    for p in CONFIG_CANDIDATES:
-        if p.exists():
-            cfg = configparser.ConfigParser()
-            cfg.read(p, encoding="utf-8")
-            return cfg["sip"]
-    sys.exit("No config.ini found.")
 
 
 def local_ip(fritzbox: str) -> str:
@@ -88,8 +63,8 @@ def to_whisper_input(pcm16: bytes) -> np.ndarray:
     return (audio16k / 32768.0).astype(np.float32)
 
 
-print("Loading Whisper model ...")
-model = WhisperModel("large-v3-turbo", device="cuda", compute_type="int8_float16")
+print(f"Loading Whisper {settings.STT_MODEL} ({settings.STT_COMPUTE}) ...")
+model = settings.load_whisper()
 print("Model ready.")
 
 GREETING_DATA = load_greeting_16()
@@ -105,7 +80,7 @@ def transcriber():
         # vad_filter off: our energy VAD has already segmented the audio; Whisper's
         # own VAD would otherwise discard short or clipped utterances
         segments, _ = model.transcribe(to_whisper_input(data), language=LANGUAGE,
-                                       vad_filter=False, beam_size=1)
+                                       vad_filter=False, beam_size=settings.STT_BEAM)
         text = " ".join(s.text.strip() for s in segments).strip()
         dur = len(data) / 2 / 8000
         if text:
@@ -189,7 +164,7 @@ def answer(call):
 
 
 if __name__ == "__main__":
-    sip = load_config()
+    sip = settings.sip_config()
     my_ip = local_ip(sip["server"])
     print(f"Registering {sip['user']}@{sip['server']} from {my_ip} (16-bit patch active) ...")
 

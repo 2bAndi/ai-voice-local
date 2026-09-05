@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PoV-Voice GenAI Lab Glass Box</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#0F1418; --panel:#161D23; --panel-2:#1C252D; --line:#2B3740; --line-2:#3A4853;
+  --ink:#D9E1E7; --muted:#8B99A6; --dim:#5D6B78;
+  --real:#3FB8C2; --real-soft:rgba(63,184,194,.16);
+  --mock:#B08BD9; --mock-soft:rgba(176,139,217,.16);
+  --shown:#6C7A86;
+  --amber:#E8A33D; --ok:#5BC98A; --bad:#E06060;
+  --mono:"IBM Plex Mono",Menlo,Consolas,monospace; --sans:"IBM Plex Sans",system-ui,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13px;line-height:1.45;overflow:hidden}
+button,select,input{font:inherit;color:inherit}
+header{display:flex;align-items:center;gap:14px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);height:48px}
+header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:.02em;white-space:nowrap}
+header h1 span{color:var(--real)}
+.led{width:9px;height:9px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 2px rgba(255,255,255,.04)}
+.led.live{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.led.replay{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.status{font-family:var(--mono);font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.spacer{flex:1}
+.ctl{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px}
+select,button{background:var(--panel-2);border:1px solid var(--line-2);border-radius:4px;padding:4px 8px;cursor:pointer}
+button:hover,select:hover{border-color:var(--real)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--real);outline-offset:1px}
+input[type=range]{width:170px;accent-color:var(--real)}
+#posl{white-space:nowrap}
+#aud{height:30px;width:300px;margin-left:10px;filter:invert(.88) hue-rotate(160deg) saturate(.6)}
+.corr{font-family:var(--mono);font-size:11px;color:var(--dim)}
+main{display:grid;grid-template-columns:1fr 360px;grid-template-rows:minmax(0,1fr);height:calc(100% - 48px)}
+.left{display:grid;grid-template-rows:auto 6px minmax(0,1fr) 6px 200px;min-width:0;border-right:1px solid var(--line)}
+.right{display:grid;grid-template-rows:auto 6px auto 6px minmax(0,1fr) 6px minmax(0,1fr);min-width:0}
+section{min-height:0;display:flex;flex-direction:column;overflow:hidden}
+/* drag handles between panels: the panel above each handle gets a fixed height, the flexible one absorbs */
+.gutter{background:var(--line);cursor:row-resize;position:relative;user-select:none}
+.gutter::after{content:"";position:absolute;left:50%;top:1px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--line-2)}
+.gutter:hover,.gutter.drag{background:var(--real)}
+.gutter:hover::after,.gutter.drag::after{background:var(--real)}
+body.dragging{cursor:row-resize}
+body.dragging *{user-select:none!important}
+.sec-h{display:flex;align-items:center;gap:10px;padding:6px 12px;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);background:var(--panel)}
+.sec-h .n{margin-left:auto;color:var(--dim);letter-spacing:0;text-transform:none}
+.body{overflow:auto;min-height:0;padding:8px 12px}
+/* map */
+#map{width:100%;height:auto;flex:1 1 auto;min-height:0;display:block;background:var(--panel)}
+.box rect{fill:var(--panel-2);stroke:var(--line-2);stroke-width:1.2;rx:4}
+.box.real rect{stroke:var(--real)}
+.box.mock rect{stroke:var(--mock);stroke-dasharray:5 3}
+.box.shown rect{stroke:var(--shown);stroke-dasharray:2 3}
+.box text{fill:var(--ink);font-family:var(--sans);font-size:11.5px;font-weight:600;pointer-events:none}
+.box .sub{fill:var(--muted);font-weight:400;font-size:9.6px;font-family:var(--mono)}
+.box .tag{fill:var(--dim);font-size:9px;font-family:var(--mono);font-weight:500;letter-spacing:.08em}
+.box.real .tag{fill:var(--real)} .box.mock .tag{fill:var(--mock)}
+.box.hot rect{fill:var(--real-soft);stroke-width:2;filter:drop-shadow(0 0 6px var(--real))}
+.box.mock.hot rect{fill:var(--mock-soft);filter:drop-shadow(0 0 6px var(--mock))}
+.box.bad rect{stroke:var(--bad);fill:rgba(224,96,96,.14);filter:drop-shadow(0 0 6px var(--bad))}
+.edge{fill:none;stroke:var(--line-2);stroke-width:1.6}
+.edge.hot{stroke:var(--real);stroke-width:2.6;filter:drop-shadow(0 0 4px var(--real))}
+.edge.hot.mockhot{stroke:var(--mock);filter:drop-shadow(0 0 4px var(--mock))}
+.edge.bad{stroke:var(--bad);stroke-width:2.6;filter:drop-shadow(0 0 4px var(--bad))}
+.edge.dashed{stroke-dasharray:5 4}
+.box.sel rect{stroke:#FFFFFF;stroke-width:2.2;fill:rgba(255,255,255,.08)}
+.edge.sel{stroke:#FFFFFF;stroke-width:2.6}
+.row-sel{background:rgba(255,255,255,.08)!important;outline:1px solid var(--line-2)}
+.seqrow{cursor:pointer} .seqrow:hover rect.hit{fill:rgba(255,255,255,.04)}
+rect.hit{fill:transparent}
+#detail{border-top:1px solid var(--line);background:var(--panel);padding:6px 12px;font-family:var(--mono);font-size:11px;display:grid;grid-template-columns:1fr;gap:2px}
+#detail #d-head{color:var(--real)} #detail #d-inv{color:var(--amber)} #detail #d-body{color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:60px;overflow:auto}
+.zone{fill:none;stroke:var(--line);stroke-dasharray:6 4;stroke-width:1}
+.zone-t{fill:var(--dim);font-family:var(--mono);font-size:9.5px;letter-spacing:.12em}
+.chip{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--line-2);color:var(--muted)}
+.chip.IDLE{color:var(--muted)} .chip.PROPOSED{color:var(--amber);border-color:var(--amber)}
+.chip.CONFIRMED{color:var(--ok);border-color:var(--ok)} .chip.EXECUTED{color:var(--real);border-color:var(--real)}
+.chip.FROZEN{color:var(--bad);border-color:var(--bad)}
+/* sequence */
+#seq{display:block}
+.lane-h{fill:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.06em}
+.lane-l{stroke:var(--line);stroke-width:1;stroke-dasharray:2 4}
+.arr{stroke:var(--real);stroke-width:1.4;fill:none}
+.arr.mockarr{stroke:var(--mock)} .arr.badarr{stroke:var(--bad)} .arr.amberarr{stroke:var(--amber)}
+.arr-t{fill:var(--ink);font-family:var(--mono);font-size:10px}
+.arr-s{fill:var(--dim);font-family:var(--mono);font-size:9.5px}
+.arr-ms{fill:var(--muted);font-family:var(--mono);font-size:9.5px;text-anchor:end}
+/* ticker */
+.tick{font-family:var(--mono);font-size:11px;display:grid;grid-template-columns:62px 104px 190px 1fr 56px;gap:8px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.03);white-space:nowrap;overflow:hidden}
+.tick .t{color:var(--dim)} .tick .hop{color:var(--real)} .tick .hop.m{color:var(--mock)} .tick .hop.a{color:var(--muted)}
+.tick .k{color:var(--ink)} .tick .d{color:var(--muted);overflow:hidden;text-overflow:ellipsis} .tick .ms{color:var(--amber);text-align:right}
+.tick.bad .k{color:var(--bad)}
+/* right panels */
+.kv{display:grid;grid-template-columns:110px 1fr;gap:4px 10px;font-family:var(--mono);font-size:11.5px}
+.kv .k{color:var(--muted)}
+.worm{font-family:var(--mono);font-size:11px}
+.worm .rec{display:grid;grid-template-columns:96px 80px 1fr;gap:8px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.worm .rec .h{color:var(--dim)} .worm .rec .p{color:var(--amber)} .worm .rec .p.post{color:var(--ok)}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:11px}
+th,td{padding:3px 6px;text-align:right;border-bottom:1px solid rgba(255,255,255,.04);font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-weight:500} td.l,th.l{text-align:left} td.said{color:var(--muted);text-align:left;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sip{font-family:var(--mono);font-size:11px}
+.sip .row{display:grid;grid-template-columns:52px 22px 1fr;gap:6px;padding:2px 0;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.04)}
+.sip .row:hover,.sip .row.sel{background:var(--panel-2)}
+.sip .dir{color:var(--amber)} .sip .dir.rx{color:var(--real)}
+.sip .row .l{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+pre.raw{margin:8px 0 0;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px;font-size:10.5px;line-height:1.4;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:220px;overflow:auto}
+pre.raw b{color:var(--ink);font-weight:500}
+.empty{color:var(--dim);font-family:var(--mono);font-size:11px;padding:6px 0}
+.legend{display:flex;gap:14px;font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:auto}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;border:1px solid}
+.legend .r i{border-color:var(--real)} .legend .m i{border-color:var(--mock);border-style:dashed} .legend .s i{border-color:var(--shown);border-style:dotted}
+@media (prefers-reduced-motion: reduce){ .box.hot rect,.edge.hot{filter:none} }
+</style>
+</head>
+<body>
+<header>
+  <h1>PoV-Voice GenAI Lab <span>GLASS BOX</span></h1>
+  <div class="status"><i class="led" id="led"></i><span id="mode">connecting…</span><span class="corr" id="corr"></span></div>
+  <div class="spacer"></div>
+  <div class="ctl">
+    <label for="callsel">replay</label>
+    <select id="callsel"><option value="">— live —</option></select>
+    <button id="play" title="play / pause">▶</button>
+    <select id="speed"><option value="1">1×</option><option value="3" selected>3×</option><option value="10">10×</option><option value="0">instant</option></select>
+    <input type="range" id="pos" min="0" max="0" value="0">
+    <span id="posl">0 / 0</span>
+    <audio id="aud" controls preload="metadata" hidden title="call recording · left: caller, right: agent · seeking here moves the map, clicking a row seeks here"></audio>
+  </div>
+</header>
+<main>
+  <div class="left">
+    <section>
+      <div class="sec-h">Architecture · PoV v1.20 layout · click any row below to jump to that moment (↑/↓ to step) · drag the bars between panels to resize, double-click to reset
+        <div class="legend"><span class="r"><i></i>real</span><span class="m"><i></i>mock</span><span class="s"><i></i>shown only</span></div>
+      </div>
+      <svg id="map" viewBox="0 0 1200 456" role="img" aria-label="Architecture map"></svg>
+      <div id="detail" hidden><div id="d-head"></div><div id="d-inv"></div><div id="d-body"></div></div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section data-flex>
+      <div class="sec-h">Sequence · every hop of this call <span class="n" id="seqn"></span></div>
+      <div class="body" id="seqwrap"><svg id="seq" width="100%" height="40"></svg></div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section>
+      <div class="sec-h">Events <span class="n" id="tickn"></span></div>
+      <div class="body" id="ticker"></div>
+    </section>
+  </div>
+  <div class="right">
+    <section>
+      <div class="sec-h">Confirm gate</div>
+      <div class="body">
+        <div class="kv">
+          <div class="k">state</div><div><span class="chip IDLE" id="gstate">IDLE</span></div>
+          <div class="k">action · card</div><div id="gaction">—</div>
+          <div class="k">last reply</div><div id="gutt">—</div>
+          <div class="k">verdict</div><div id="gverdict">—</div>
+          <div class="k">guardrails</div><div id="gguard">—</div>
+        </div>
+      </div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section>
+      <div class="sec-h">WORM chain <span class="n" id="wormn"></span></div>
+      <div class="body worm" id="worm"><div class="empty">no records yet</div></div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section data-flex>
+      <div class="sec-h">Turn latency · ms from end of utterance</div>
+      <div class="body"><table><thead><tr><th class="l">#</th><th>stt</th><th>tok</th><th>tts</th><th>audio</th><th class="l">caller</th></tr></thead><tbody id="lat"></tbody></table></div>
+    </section>
+    <div class="gutter" title="drag to resize"></div>
+    <section>
+      <div class="sec-h">SIP inspector · FRITZ!Box ⇄ agent <span class="n" id="sipn"></span></div>
+      <div class="body sip"><div id="siplist"></div><pre class="raw" id="sipraw" hidden></pre></div>
+    </section>
+  </div>
+</main>
+
+<script>
+/* ------------------------------------------------------------------ architecture map */
+const BOXES = [
+  // ingress (left) — Avaya estate played by the FRITZ!Box
+  {id:"caller",  x:14,  y:196, w:78,  h:58, cls:"real",  tag:"PSTN",          t:"Caller",          s:"\"Bob\""},
+  {id:"carrier", x:110, y:156, w:160, h:44, cls:"real",  tag:"SP-F · AVAYA",  t:"Carrier / SIP trunk", s:"FRITZ!Box line"},
+  {id:"avaya",   x:110, y:212, w:160, h:52, cls:"real",  tag:"SP-F · AVAYA",  t:"Avaya SBC · B2BUA",  s:"re-originates every msg"},
+  {id:"mbridge", x:110, y:276, w:160, h:44, cls:"mock",  tag:"TO BE CHECKED", t:"\"Media Bridge\"",  s:"AAMS? HCG? G450?"},
+  // Puzzel (top)
+  {id:"psbc",    x:340, y:36,  w:150, h:52, cls:"mock",  tag:"SP-E · PUZZEL", t:"Puzzel SBC",        s:"SIP edge (mock)"},
+  {id:"pch",     x:510, y:36,  w:160, h:52, cls:"mock",  tag:"PUZZEL",        t:"Communication Hub", s:"session ID · handoff"},
+  {id:"pcc",     x:690, y:36,  w:150, h:52, cls:"shown", tag:"PUZZEL",        t:"Contact Centre",    s:"ACD · queue"},
+  {id:"pagent",  x:860, y:36,  w:130, h:52, cls:"shown", tag:"PUZZEL",        t:"Agent \"Alice\"",    s:"HITL queue"},
+  {id:"bifrost", x:510, y:108, w:160, h:40, cls:"shown", tag:"CONTROL PLANE", t:"Bifröst",           s:"PCH ↔ bank · session context"},
+  // swap points (middle)
+  {id:"spa",     x:300, y:168, w:130, h:112,cls:"mock",  tag:"SP-A · RING 3", t:"Sandbox SBC",       s:"pyVoIP today · FreeSWITCH next"},
+  {id:"spb",     x:450, y:168, w:180, h:142,cls:"real",  tag:"SP-B · RING 2", t:"Session controller", s:"bi-directional audio · RTP↔PCM", s2:"DTMF masking · corr-ID minted here"},
+  {id:"spc",     x:650, y:168, w:200, h:142,cls:"real",  tag:"SP-C · SP-D · RING 2/1", t:"Speech · orchestration", s:"whisper → qwen3.8 → Piper", s2:"tool loop · no decision rights"},
+  // fixed core (right)
+  {id:"gw",      x:882, y:142, w:140, h:52, cls:"real",  tag:"FIXED CORE",    t:"MCP gateway",       s:"the only door"},
+  {id:"read",    x:1036,y:142, w:140, h:52, cls:"mock",  tag:"READ PATH",     t:"Read tools · BPM sync", s:"data back to SP-D"},
+  {id:"gate",    x:882, y:208, w:140, h:52, cls:"real",  tag:"ACTION PATH",   t:"Confirm gate",      s:"two-call · state machine"},
+  {id:"bpm",     x:1036,y:208, w:140, h:52, cls:"shown", tag:"FIXED CORE",    t:"BPM async path",    s:"after WORM ack · calls banking API"},
+  {id:"worm",    x:882, y:274, w:140, h:52, cls:"real",  tag:"ACTION PATH",   t:"Pre-commit WORM",   s:"evidence before execution"},
+  {id:"bank",    x:1036,y:274, w:140, h:52, cls:"mock",  tag:"ACTION PATH",   t:"Banking API",       s:"called by BPM · idempotency key"},
+  // observability (bottom left) — this page is the observability layer
+  {id:"convlog", x:310, y:392, w:165, h:40, cls:"real",  tag:"OBSERVABILITY", t:"Conversation log",  s:"transcript per turn"},
+  {id:"latency", x:487, y:392, w:165, h:40, cls:"real",  tag:"OBSERVABILITY", t:"Latency monitoring", s:"turn · TTFB · first audio"},
+  {id:"evlog",   x:664, y:392, w:186, h:40, cls:"real",  tag:"OBSERVABILITY", t:"Events & transcripts", s:"calls\\*.jsonl (DynamoDB)"},
+  // recording & evidence / system of record (bottom right)
+  {id:"wormstore",x:882,y:392, w:140, h:40, cls:"real",  tag:"RECORDING · EVIDENCE", t:"WORM store", s:"worm.jsonl (S3 Object Lock)"},
+  {id:"sor",     x:1036,y:392, w:140, h:40, cls:"shown", tag:"SYSTEM OF RECORD", t:"Core banking",  s:"card mgmt · customer master"},
+];
+const EDGES = {
+  "caller-avaya": "M92,225 L110,225",
+  "carrier-sbc":  "M190,200 L190,212",
+  "avaya-spa":    "M270,238 L300,238",
+  "avaya-mb":     "M190,264 L190,276",
+  "spa-spb":      "M430,238 L450,238",
+  "spb-spc":      "M630,240 L650,240",
+  "spd-gw":       "M850,200 C866,200 866,168 882,168",
+  "gw-read":      "M1022,168 L1036,168",
+  "gw-gate":      "M952,194 L952,208",
+  "gate-worm":    "M952,260 L952,274",
+  "bpm-bank":     "M1106,260 L1106,274",
+  "worm-store":   "M952,326 L952,392",
+  "worm-bpm":     "M1022,286 C1060,286 1078,278 1090,260",
+  "spd-spe":      "M750,168 L750,98 L415,98 L415,88",
+  "avaya-spe":    "M270,224 L286,224 L286,62 L340,62",
+  "spb-obs":      "M540,310 L540,392",
+  "spc-obs":      "M757,310 L757,392",
+  "bank-sor":     "M1106,326 L1106,392",
+  "bifrost-pch":  "M590,108 L590,88",
+  "bifrost-spb":  "M590,148 L590,168",
+};
+const DASHED = new Set(["avaya-spe","spd-spe","worm-bpm","bifrost-pch","bifrost-spb","avaya-mb"]);
+const HOP2EDGE = {"AVAYA→SP-A":"avaya-spa","SP-A→SP-B":"spa-spb","SP-B→SP-A":"spa-spb","SP-B→SP-C":"spb-spc","SP-C→SP-B":"spb-spc",
+  "SP-C→SP-D":null,"SP-D→SP-C":null,"SP-D→GW":"spd-gw","GW→SP-D":"spd-gw","GW→READ":"gw-read","READ→GW":"gw-read","GW→GATE":"gw-gate","GATE→WORM":"gate-worm","WORM→BPM":"worm-bpm","BPM→BANK":"bpm-bank","BANK→SOR":"bank-sor","WORM→BANK":"bpm-bank",
+  "GW→WORM":"gate-worm","GW→BANK":"gw-read","SP-D→SP-E":"spd-spe","CALLER→AVAYA":"caller-avaya"};
+const HOP2BOX = {"AVAYA→SP-A":["avaya","spa"],"SP-A→SP-B":["spa","spb"],"SP-B→SP-A":["spb","spa"],"SP-B→SP-C":["spb","spc"],"SP-C→SP-B":["spc","spb"],
+  "SP-C→SP-D":["spc"],"SP-D→SP-C":["spc"],"SP-D→GW":["spc","gw"],"GW→SP-D":["gw","spc"],"GW→READ":["gw","read"],"READ→GW":["read","gw"],"GW→GATE":["gw","gate"],"GATE→WORM":["gate","worm"],"WORM→BPM":["worm","bpm"],"BPM→BANK":["bpm","bank"],"BANK→SOR":["bank","sor"],"WORM→BANK":["bpm","bank"],
+  "GW→WORM":["gate","worm"],"GW→BANK":["gw","read"],"SP-D→SP-E":["spc","psbc","pch"],"AGENT":["spc"]};
+const svgNS = "http://www.w3.org/2000/svg";
+function el(n, a, txt){ const e=document.createElementNS(svgNS,n); for(const k in a) if(a[k]!=null) e.setAttribute(k,a[k]); if(txt!=null) e.textContent=txt; return e; }
+function fitText(t, w){ const est=(t.textContent||"").length*5.6; if(est>w){ t.setAttribute("textLength",w); t.setAttribute("lengthAdjust","spacingAndGlyphs"); } }
+function buildMap(){
+  const m=document.getElementById("map");
+  const zones=[
+    [100,132,182,196,"AVAYA — bank-owned, on the critical path"],
+    [330,16,680,80,"PUZZEL — third-party CCaaS · SP-E"],
+    [290,144,572,174,"SWAP POINTS SP-A … SP-D"],
+    [870,116,318,208,"FIXED CORE — bank-owned, not swappable"],
+    [300,372,560,72,"OBSERVABILITY — this page"],
+    [870,372,318,72,"RECORDING · EVIDENCE · SYSTEM OF RECORD"],
+  ];
+  for(const [x,y,w,h,t] of zones){ m.appendChild(el("rect",{class:"zone",x,y,width:w,height:h,rx:4})); m.appendChild(el("text",{class:"zone-t",x:x+8,y:y+12},t)); }
+  m.appendChild(el("text",{class:"zone-t",x:882,y:204},"ACTION PATH — ONLY FOR THE FINAL ACTION, WITH ALL PARAMETERS"));
+  for(const id in EDGES){ if(!EDGES[id]) continue; m.appendChild(el("path",{class:"edge"+(DASHED.has(id)?" dashed":""),id:"e-"+id,d:EDGES[id]})); }
+  for(const b of BOXES){
+    const g=el("g",{class:"box "+b.cls,id:"b-"+b.id}); g.dataset.id=b.id;
+    g.appendChild(el("rect",{x:b.x,y:b.y,width:b.w,height:b.h}));
+    const tag=el("text",{class:"tag",x:b.x+7,y:b.y+12},b.tag); g.appendChild(tag); fitText(tag,b.w-14);
+    const ti=el("text",{x:b.x+7,y:b.y+27},b.t); g.appendChild(ti); fitText(ti,b.w-14);
+    const su=el("text",{class:"sub",x:b.x+7,y:b.y+40},b.s); g.appendChild(su); fitText(su,b.w-14);
+    if(b.s2){ const su2=el("text",{class:"sub",x:b.x+7,y:b.y+52},b.s2); g.appendChild(su2); fitText(su2,b.w-14); }
+    m.appendChild(g);
+  }
+}
+const hotTimers = {}, hotUntil = {};
+function pulse(id, cls, ms){            // one-shot: at least ms from now, never shortens a longer hold
+  const e=document.getElementById(id); if(!e) return;
+  const end=Math.max(hotUntil[id+cls]||0, Date.now()+(ms||700));
+  hotUntil[id+cls]=end; e.classList.add(cls); clearTimeout(hotTimers[id+cls]);
+  hotTimers[id+cls]=setTimeout(()=>{ e.classList.remove(cls); hotUntil[id+cls]=0; }, end-Date.now());
+}
+function hold(id, cls, ms){             // playback semantics: queue behind what is already playing
+  const e=document.getElementById(id); if(!e) return;
+  const start=Math.max(hotUntil[id+cls]||0, Date.now()); const end=start+ms;
+  hotUntil[id+cls]=end; e.classList.add(cls); clearTimeout(hotTimers[id+cls]);
+  hotTimers[id+cls]=setTimeout(()=>{ e.classList.remove(cls); hotUntil[id+cls]=0; }, end-Date.now());
+}
+function release(ids, cls){ for(const id of ids){ const e=document.getElementById(id); if(e){ e.classList.remove(cls); hotUntil[id+cls]=0; clearTimeout(hotTimers[id+cls]); } } }
+const OUT_PATH = ["e-spb-spc","b-spb","e-spa-spb","b-spa","e-avaya-spa","b-avaya","e-carrier-sbc","b-carrier","e-caller-avaya","b-caller"];   // agent audio → ear
+const IN_PATH  = ["b-caller","e-caller-avaya","b-carrier","e-carrier-sbc","b-avaya","e-avaya-spa","b-spa","e-spa-spb","b-spb"];             // caller voice → VAD
+function involved(ev){
+  const p=ev.payload||{}, k=ev.kind;
+  let edges=[], boxes=[];
+  const e=HOP2EDGE[ev.hop]; if(e) edges.push("e-"+e);
+  for(const b of (HOP2BOX[ev.hop]||[])) boxes.push("b-"+b);
+  if(k.startsWith("sip.")||k==="rtp.rx.first"||k==="rtp.tx.start"){ boxes.push("b-caller","b-carrier","b-avaya"); edges.push("e-caller-avaya","e-carrier-sbc"); }
+  if(k==="rtp.write"||k==="tts.greeting"){ boxes=OUT_PATH.filter(x=>x.startsWith("b-")); edges=OUT_PATH.filter(x=>x.startsWith("e-")); }
+  if(k==="vad.start"||k==="vad.utterance"||k==="vad.level"){ boxes=IN_PATH.filter(x=>x.startsWith("b-")); edges=IN_PATH.filter(x=>x.startsWith("e-")); }
+  if(k==="stt.done"||k==="llm.sentence") boxes.push("b-convlog");
+  if(k==="turn.first_audio") boxes.push("b-latency");
+  if(k==="worm.ack"){ boxes.push("b-wormstore"); edges.push("e-worm-store"); }
+  if(k==="bank.card_blocked"){ boxes.push("b-sor"); edges.push("e-bank-sor"); }
+  boxes.push("b-evlog");
+  return {edges:[...new Set(edges)], boxes:[...new Set(boxes)]};
+}
+function mapEvent(ev){
+  const p=ev.payload||{};
+  if(ev.kind==="rtp.write"){ for(const id of OUT_PATH) hold(id,"hot",p.audio_ms||0); pulse("b-evlog","hot",300); return; }
+  if(ev.kind==="tts.greeting") return;
+  if(ev.kind==="vad.start"){ for(const id of IN_PATH) pulse(id,"hot",15000); return; }
+  if(ev.kind==="vad.utterance"){ release(IN_PATH,"hot"); }
+  if(ev.kind==="vad.level"){ if(p.speech) for(const id of IN_PATH) pulse(id,"hot",3000); return; }
+  const bad = /rejected|refused|write_failed|failed|suppressed/.test(ev.kind) || (ev.payload && ev.payload.ok===false);
+  const isMock = /SP-E|BANK|READ|BPM|SOR/.test(ev.hop);
+  const inv=involved(ev);
+  for(const id of inv.edges){ pulse(id, bad?"bad":"hot", 700); if(isMock) pulse(id,"mockhot",700); }
+  for(const id of inv.boxes) pulse(id, bad?"bad":"hot", id==="b-evlog"?300:700);
+}
+/* ------------------------------------------------------------------ focus (click a row = jump to that moment) */
+let allEvents=[], focusIdx=-1;
+function clearFocus(){
+  document.querySelectorAll("#map .sel").forEach(e=>e.classList.remove("sel"));
+  document.querySelectorAll(".row-sel").forEach(e=>e.classList.remove("row-sel"));
+  document.getElementById("detail").hidden=true; focusIdx=-1;
+}
+function focusEvent(i, fromSeek){
+  const ev=allEvents[i]; if(!ev) return;
+  if(replay && !fromSeek){ seek(i+1); }         // rebuild the panels up to this moment
+  document.querySelectorAll("#map .sel").forEach(e=>e.classList.remove("sel"));
+  document.querySelectorAll(".row-sel").forEach(e=>e.classList.remove("row-sel"));
+  focusIdx=i;
+  if(aud.src && !aud.hidden && ev.t!=null && Math.abs(aud.currentTime-ev.t)>0.3){ audSeekByUs=true; try{ aud.currentTime=Math.max(0,ev.t); }catch(e){} }
+  const inv=involved(ev);
+  for(const id of [...inv.edges,...inv.boxes]){ const e=document.getElementById(id); if(e) e.classList.add("sel"); }
+  document.querySelectorAll(`[data-idx="${i}"]`).forEach(e=>{ e.classList.add("row-sel"); if(e.scrollIntoView && !fromSeek) e.scrollIntoView({block:"nearest"}); });
+  const d=document.getElementById("detail"); d.hidden=false;
+  const names={caller:"Caller",carrier:"Carrier / SIP trunk",avaya:"Avaya SBC (FRITZ!Box)",mbridge:"Media bridge",psbc:"Puzzel SBC",pch:"Puzzel Communication Hub",spa:"SP-A sandbox SBC",spb:"SP-B session controller",spc:"SP-C/SP-D speech & orchestration",gw:"MCP gateway",read:"Read tools / BPM sync",gate:"Confirm gate",bpm:"BPM async",worm:"Pre-commit WORM",bank:"Banking API",convlog:"Conversation log",latency:"Latency monitoring",evlog:"Events & transcripts",wormstore:"WORM store",sor:"Core banking"};
+  const inv2=inv.boxes.filter(b=>b!=="b-evlog").map(b=>names[b.slice(2)]||b.slice(2));
+  document.getElementById("d-head").textContent=`#${i+1} · ${fmtT(ev.t)} · ${ev.hop} · ${ev.kind}`+(ev.ms!=null?` · ${Math.round(ev.ms)} ms`:"");
+  document.getElementById("d-inv").textContent="involved: "+inv2.join(" → ");
+  document.getElementById("d-body").textContent=JSON.stringify(ev.payload||{},null,1).replace(/\n\s*/g," ").slice(0,900);
+}
+document.addEventListener("keydown",(e)=>{ if(focusIdx<0||document.activeElement.tagName==="SELECT") return;
+  if(e.key==="ArrowDown"){ e.preventDefault(); focusEvent(Math.min(allEvents.length-1,focusIdx+1)); }
+  if(e.key==="ArrowUp"){ e.preventDefault(); focusEvent(Math.max(0,focusIdx-1)); } });
+
+/* ------------------------------------------------------------------ sequence diagram */
+const LANES = ["Caller","Avaya","SP-E","SP-A","SP-B","SP-C","SP-D","GW","READ","GATE","WORM","BANK"];
+const LANE_OF = {"CALLER":0,"AVAYA":1,"SP-E":2,"SP-A":3,"SP-B":4,"SP-C":5,"SP-D":6,"GW":7,"READ":8,"GATE":9,"WORM":10,"BANK":11,"AGENT":6};
+let seqRows=0; const SEQ_W=1100, LANE_X=(i)=>60+i*(SEQ_W-120)/(LANES.length-1), ROW_H=22, SEQ_TOP=26, SEQ_MAX=600;
+function seqReset(){
+  const s=document.getElementById("seq"); s.innerHTML=""; seqRows=0;
+  s.setAttribute("viewBox",`0 0 ${SEQ_W} ${SEQ_TOP+ROW_H}`); s.setAttribute("height", SEQ_TOP+ROW_H);
+  LANES.forEach((l,i)=>{ s.appendChild(el("text",{class:"lane-h",x:LANE_X(i),y:14,"text-anchor":"middle"},l)); });
+  document.getElementById("seqn").textContent="";
+}
+function seqEvent(ev, idx){
+  if(ev.hop==="AGENT" && !/guardrail|call\./.test(ev.kind)) return;
+  if(ev.kind==="gw.validate" || ev.kind==="rtp.write" || ev.kind==="filler.typing" || ev.kind==="vad.level") return;
+  if(seqRows>=SEQ_MAX) return;
+  const s=document.getElementById("seq");
+  const [a,b] = ev.hop==="AGENT" ? ["AGENT","AGENT"] : ev.hop.split("→");
+  const xa=LANE_X(LANE_OF[a]??5), xb=LANE_X(LANE_OF[b]??5), y=SEQ_TOP+seqRows*ROW_H+ROW_H/2;
+  seqRows++;
+  const h=SEQ_TOP+seqRows*ROW_H+6; s.setAttribute("viewBox",`0 0 ${SEQ_W} ${h}`); s.setAttribute("height",h);
+  if(seqRows===1) LANES.forEach((l,i)=>s.insertBefore(el("line",{class:"lane-l",id:"ll"+i,x1:LANE_X(i),y1:SEQ_TOP,x2:LANE_X(i),y2:SEQ_MAX*ROW_H+SEQ_TOP}), s.firstChild));
+  const bad = /rejected|refused|write_failed|failed|suppressed/.test(ev.kind) || (ev.payload&&ev.payload.ok===false);
+  if(ev.kind==="speech.switch") pulse("b-spb","hot",1500);
+  const cls = "arr"+(bad?" badarr":/GATE|WORM/.test(ev.hop)?" amberarr":/SP-E|BANK|READ/.test(ev.hop)?" mockarr":"");
+  const g=el("g",{class:"seqrow","data-idx":idx}); g.dataset.idx=idx; g.onclick=()=>focusEvent(idx);
+  g.appendChild(el("rect",{class:"hit",x:0,y:y-ROW_H/2,width:SEQ_W,height:ROW_H}));
+  if(xa!==xb){
+    g.appendChild(el("path",{class:cls,d:`M${xa},${y} L${xb},${y}`}));
+    const dir = xb>xa?-1:1; g.appendChild(el("path",{class:cls,d:`M${xb},${y} l${dir*6},-4 M${xb},${y} l${dir*6},4`}));
+  } else {
+    g.appendChild(el("path",{class:cls,d:`M${xa},${y-6} a6,6 0 1,1 0.1,0`}));
+  }
+  const lx = Math.min(xa,xb)+8, txt = ev.kind + (shortDetail(ev)?"  "+shortDetail(ev):"");
+  g.appendChild(el("text",{class:"arr-t",x:lx,y:y-5},txt.slice(0,110)));
+  g.appendChild(el("text",{class:"arr-s",x:8,y:y+4},fmtT(ev.t)));
+  if(ev.ms!=null) g.appendChild(el("text",{class:"arr-ms",x:SEQ_W-8,y:y+4},Math.round(ev.ms)+" ms"));
+  s.appendChild(g);
+  document.getElementById("seqn").textContent=seqRows+" rows";
+  const w=document.getElementById("seqwrap"); w.scrollTop=w.scrollHeight;
+}
+function fmtT(t){ return t==null?"":(t<0?"−":"")+Math.abs(t).toFixed(3)+"s"; }
+function shortDetail(ev){
+  const p=ev.payload||{}, k=ev.kind;
+  if(k.startsWith("sip.")) return p.line||"";
+  if(k==="stt.done") return '"'+(p.text||"").slice(0,70)+'"  · lang '+(p.language||"?")+(p.language_mode?" ("+p.language_mode+")":"")+(p.beam?" beam "+p.beam:"");
+  if(k==="llm.sentence") return '"'+(p.text||"").slice(0,80)+'"';
+  if(k==="llm.prompt") return p.update ? "system prompt updated · "+p.update+" · reply in "+p.reply_language : "system prompt "+p.chars+" chars · reply in "+p.reply_language+" · "+(p.tools||[]).length+" tools · "+(p.rules||[]).length+" rules · "+(p.guardrails||[]).length+" guardrails";
+  if(k==="stt.language") return "detected "+p.detected+" (p="+p.probability+") · current "+p.current+" → "+p.decision+" · "+(p.reason||"");
+  if(k==="speech.switch") return "language "+p.from+" → "+p.to+" · voice "+p.voice_from+" → "+p.voice_to+" · reply in "+p.reply_language;
+  if(k==="llm.request") return "iter "+p.iteration+" · "+p.messages+" msgs · "+p.model+" · temp "+p.temperature+" · think off · after "+p.last_role;
+  if(k==="speech.config"){ const s=p.stt||{}, t=p.tts||{}; return "STT "+s.model+" "+s.compute+" beam "+s.beam+" lang="+s.language+" · "+(s.mode||"")+" · TTS "+t.voice+" · reply "+p.reply_language; }
+  if(k==="tts.synth") return (p.audio_ms||"?")+" ms audio · "+(p.voice||"")+(p.text?' "'+p.text.slice(0,50)+'"':"");
+  if(k==="guardrail.pass") return "turn passed "+(p.checks||[]).length+" checks · tools this turn: "+p.tools_called_this_turn+" · nudges "+p.nudges;
+  if(k==="guardrail.nudge") return p.type+' → LLM told: "'+(p.instruction||"").slice(0,60)+'…"';
+  if(k==="tool.call") return p.tool+"("+JSON.stringify(p.args||{})+")";
+  if(k==="read.result") return p.tool+" → "+(p.ok?"OK ":"ERROR ")+(p.result||"").slice(0,70);
+  if(k==="tool.result") return p.tool+" → "+(p.ok?"OK ":"ERROR ")+(p.result||"").slice(0,70);
+  if(k==="gate.state") return p.from+" → "+p.to+" "+(p.action||"")+" "+(p.card||"")+" ("+p.reason+")";
+  if(k==="gate.classify") return '"'+p.utterance+'" → '+p.verdict;
+  if(k==="gate.rejected") return "state "+p.state+", wanted "+JSON.stringify(p.wanted);
+  if(k==="worm.ack") return p.phase+" "+p.record_id+" "+String(p.hash||"").slice(0,10)+"…";
+  if(k==="bank.call") return p.api+" "+p.card_last4+" idem "+p.idempotency_key;
+  if(k==="llm.done") return "iter "+p.iteration+" · tools "+JSON.stringify(p.tool_calls||[]);
+  if(k==="llm.token.first") return "iter "+p.iteration;
+  if(k==="vad.utterance"||k==="tts.synth"||k==="tts.greeting") return (p.audio_ms||"?")+" ms audio";
+  if(k==="rtp.rx.first") return "PT "+p.payload_type+" "+p.codec+" SSRC "+p.ssrc;
+  if(k==="rtp.tx.start") return p.codec+" → "+p.to;
+  if(k==="rtp.dtmf") return "digit masked";
+  if(k==="vad.level") return "peak "+p.peak_rms+" / thr "+p.threshold+(p.speech?" · in speech":"");
+  if(k==="vad.start") return "speech onset rms "+p.rms;
+  if(k==="call.start") return "from "+(p.sip_from||"");
+  if(k==="call.end") return p.reason+" · turns "+(p.turns??"");
+  if(k.startsWith("guardrail.")||k.startsWith("action.")||k.startsWith("bank.")) return Object.entries(p).map(([a,b])=>a+"="+b).join(", ").slice(0,90);
+  if(k==="escalate") return p.reason||"";
+  if(k==="read.call") return p.tool+" via "+p.path;
+  if(k==="gate.call") return p.action+" "+p.card+(p.with_reply?" · with caller reply":" · call 1 (no reply)");
+  return "";
+}
+
+/* ------------------------------------------------------------------ ticker + panels */
+let tickN=0, sipEvents=[], turns=[], turn=null, wormRecs=0, guardCount=0;
+function resetAll(){
+  allEvents=[]; clearFocus();
+  document.getElementById("ticker").innerHTML=""; tickN=0; document.getElementById("tickn").textContent="";
+  sipEvents=[]; document.getElementById("siplist").innerHTML=""; document.getElementById("sipraw").hidden=true; document.getElementById("sipn").textContent="";
+  turns=[]; turn=null; document.getElementById("lat").innerHTML="";
+  wormRecs=0; document.getElementById("worm").innerHTML='<div class="empty">no records yet</div>'; document.getElementById("wormn").textContent="";
+  guardCount=0; setGate("IDLE","—","—","—"); document.getElementById("gguard").textContent="—";
+  seqReset();
+  document.querySelectorAll(".box.bad,.edge.bad").forEach(e=>e.classList.remove("bad"));
+}
+function setGate(state, action, utt, verdict){
+  const c=document.getElementById("gstate"); c.className="chip "+state; c.textContent=state;
+  if(action!=null) document.getElementById("gaction").textContent=action;
+  if(utt!=null) document.getElementById("gutt").textContent=utt;
+  if(verdict!=null) document.getElementById("gverdict").textContent=verdict;
+}
+function tick(ev, idx){
+  const t=document.getElementById("ticker");
+  const bad=/rejected|refused|write_failed|failed|suppressed/.test(ev.kind)||(ev.payload&&ev.payload.ok===false);
+  const d=document.createElement("div"); d.className="tick"+(bad?" bad":""); d.dataset.idx=idx; d.style.cursor="pointer"; d.onclick=()=>focusEvent(idx);
+  const hopcls = ev.hop==="AGENT"?"a":/SP-E|BANK|READ/.test(ev.hop)?"m":"";
+  d.innerHTML=`<span class="t">${fmtT(ev.t)}</span><span class="hop ${hopcls}">${ev.hop}</span><span class="k">${ev.kind}</span><span class="d" title="${esc(JSON.stringify(ev.payload||{}))}">${esc(shortDetail(ev))}</span><span class="ms">${ev.ms!=null?Math.round(ev.ms)+" ms":""}</span>`;
+  t.appendChild(d); tickN++;
+  while(t.children.length>400) t.removeChild(t.firstChild);
+  document.getElementById("tickn").textContent=tickN+" events"; t.scrollTop=t.scrollHeight;
+}
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function panels(ev){
+  const p=ev.payload||{}, k=ev.kind;
+  if(k==="gate.state"){ setGate(p.to, (p.action||"—")+(p.card?" · "+p.card:""), null, null); if(p.to==="IDLE") setGate("IDLE","—",null,null); }
+  if(k==="gate.classify"){ setGate(document.getElementById("gstate").textContent, null, '"'+p.utterance+'"', p.verdict); }
+  if(k==="gate.rejected"){ setGate(p.state, null, null, "REJECTED "+JSON.stringify(p.wanted)); }
+  if(k.startsWith("guardrail.")){ guardCount++; document.getElementById("gguard").textContent=guardCount+" · last: "+k.replace("guardrail.","")+(p.type?" ("+p.type+")":""); }
+  if(k==="worm.ack"){
+    const w=document.getElementById("worm"); if(wormRecs===0) w.innerHTML="";
+    wormRecs++; const r=document.createElement("div"); r.className="rec";
+    r.innerHTML=`<span>${esc(p.record_id)}</span><span class="p ${p.phase==="post-commit"?"post":""}">${esc(p.phase)}</span><span class="h" title="${esc(p.hash)}">${esc(String(p.hash).slice(0,14))}… ← ${esc(String(p.prev).slice(0,6))}</span>`;
+    w.appendChild(r); document.getElementById("wormn").textContent=wormRecs+" acks"; w.scrollTop=w.scrollHeight;
+  }
+  if(k==="worm.write_failed"){ const w=document.getElementById("worm"); if(wormRecs===0) w.innerHTML=""; const r=document.createElement("div"); r.className="rec"; r.innerHTML=`<span style="color:var(--bad)">WRITE FAILED</span><span class="p">${esc(p.phase)}</span><span class="h">action refused</span>`; w.appendChild(r); }
+  if(k==="vad.utterance"){ turn={n:p.turn??turns.length+1, ts:ev.ts}; turns.push(turn); renderLat(); }
+  else if(turn){
+    const rel=Math.round((ev.ts-turn.ts)*1000);
+    if(k==="stt.done"){ turn.stt=rel; turn.text=p.text||""; }
+    else if(k==="llm.token.first" && turn.tok==null) turn.tok=rel;
+    else if(k==="tts.synth" && turn.tts==null) turn.tts=rel;
+    else if(k==="turn.first_audio" && turn.audio==null) turn.audio=rel;
+    renderLat();
+  }
+  if(k.startsWith("sip.") && k!=="sip.socket"){
+    sipEvents.push(ev); const l=document.getElementById("siplist"); const i=sipEvents.length-1;
+    const rx=k.includes(".rx.");
+    const r=document.createElement("div"); r.className="row"; r.dataset.i=i;
+    r.innerHTML=`<span class="dir ${rx?"rx":""}">${fmtT(ev.t)}</span><span class="dir ${rx?"rx":""}">${rx?"◀":"▶"}</span><span class="l">${esc(p.line||"")} <span style="color:var(--dim)">${esc(p.cseq||"")}</span></span>`;
+    r.onclick=()=>showSip(i); l.appendChild(r); document.getElementById("sipn").textContent=sipEvents.length+" msgs";
+  }
+}
+function renderLat(){
+  const tb=document.getElementById("lat"); tb.innerHTML="";
+  for(const t of turns){ const tr=document.createElement("tr"); tr.innerHTML=`<td class="l">${t.n}</td><td>${t.stt??"·"}</td><td>${t.tok??"·"}</td><td>${t.tts??"·"}</td><td>${t.audio??"·"}</td><td class="said" title="${esc(t.text||"")}">${esc(t.text||"")}</td>`; tb.appendChild(tr); }
+}
+function showSip(i){
+  document.querySelectorAll(".sip .row").forEach(r=>r.classList.toggle("sel", +r.dataset.i===i));
+  const ev=sipEvents[i], p=ev.payload||{}; const pre=document.getElementById("sipraw"); pre.hidden=false;
+  const raw=esc(p.raw||"").replace(/^(Via|From|To|Call-ID|CSeq|Contact|User-to-User|X-[A-Za-z-]+|Reason|Content-Type|m=|c=|a=rtpmap:[^\n]*)(:?)/gm,(m)=>"<b>"+m+"</b>");
+  const hx=Object.entries(p.headers||{}).filter(([k])=>/^X-|User-to-User|Refer|Replaces|Reason/i.test(k)).map(([k,v])=>k+": "+v).join("\n");
+  pre.innerHTML=(p.sdp?"<b>SDP</b> "+esc(JSON.stringify(p.sdp))+"\n":"")+(hx?"<b>correlation-relevant headers</b>\n"+esc(hx)+"\n":"")+"\n"+raw;
+}
+
+/* ------------------------------------------------------------------ dispatch, live + replay */
+function handle(ev, animate){ const idx=allEvents.push(ev)-1; if(animate) mapEvent(ev); seqEvent(ev, idx); tick(ev, idx); panels(ev); }
+let ws=null, replay=null;
+function setMode(mode, corr){
+  const led=document.getElementById("led"); led.className="led "+(mode==="live"?"live":mode==="replay"?"replay":"");
+  document.getElementById("mode").textContent = mode==="live"?"LIVE — agent connected":mode==="replay"?"REPLAY":mode;
+  document.getElementById("corr").textContent = corr?("corr "+corr):"";
+}
+function connect(){
+  const url=(location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws";
+  ws=new WebSocket(url);
+  ws.onopen=()=>{};
+  ws.onmessage=(m)=>{
+    const msg=JSON.parse(m.data);
+    if(msg.type==="hello"){ if(replay) return; resetAll(); setMode(msg.live?"live":"replay-only server", msg.corr); (msg.current||[]).forEach(e=>handle(e,false)); }
+    else if(msg.type==="event"){ if(replay) return; if(msg.event.kind==="call.start") { resetAll(); } setMode("live", msg.event.corr||document.getElementById("corr").textContent.replace("corr ","")); handle(msg.event,true); }
+  };
+  ws.onclose=()=>{ if(!replay) setMode("disconnected — retrying"); setTimeout(connect,2000); };
+}
+async function loadCalls(){
+  const r=await fetch("/api/calls"); const list=await r.json(); const sel=document.getElementById("callsel");
+  while(sel.options.length>1) sel.remove(1);
+  callsInfo={};
+  for(const c of list){ callsInfo[c.name]=c; const o=document.createElement("option"); o.value=c.name; o.textContent=`${c.date} ${c.time} · ${c.corr.slice(0,8)} · ${c.events} ev${c.audio?" · ♪":""}`; sel.appendChild(o); }
+}
+let callsInfo={}, audSeekByUs=false;
+const aud=document.getElementById("aud");
+const posEl=document.getElementById("pos"), posL=document.getElementById("posl"), playBtn=document.getElementById("play");
+async function startReplay(name){
+  stopReplay();
+  const evs=await (await fetch("/api/calls/"+name)).json();
+  replay={evs, i:0, playing:false, timer:null};
+  aud.pause();
+  if(callsInfo[name]&&callsInfo[name].audio){ aud.src="/api/calls/"+name+"/audio"; aud.hidden=false; } else { aud.hidden=true; aud.removeAttribute("src"); }
+  resetAll(); setMode("replay", evs[0]&&evs[0].corr); posEl.max=evs.length; posEl.value=0; posL.textContent="0 / "+evs.length;
+  play();
+}
+function stopReplay(){ if(replay){ clearTimeout(replay.timer); replay=null; } playBtn.textContent="▶"; aud.pause(); aud.hidden=true; aud.removeAttribute("src"); }
+// ---- audio <-> replay sync: the recording clock is the events' t (same t0 in the agent)
+function syncToAudio(){
+  if(!replay) return;
+  const ct=aud.currentTime, evs=replay.evs;
+  let n=0; while(n<evs.length && (evs[n].t==null || evs[n].t<=ct)) n++;
+  if(n>replay.i){ if(replay.playing){ replay.playing=false; clearTimeout(replay.timer); playBtn.textContent="▶"; }
+    while(replay.i<n) handle(evs[replay.i++],true);
+    posEl.value=replay.i; posL.textContent=replay.i+" / "+evs.length;
+    if(replay.i>0) focusEvent(replay.i-1,true); }
+  else if(n<replay.i){ seek(n); }
+}
+aud.addEventListener("play",()=>{ if(replay&&replay.playing){ replay.playing=false; clearTimeout(replay.timer); playBtn.textContent="▶"; } syncToAudio(); });
+aud.addEventListener("timeupdate",()=>{ if(!aud.paused) syncToAudio(); });
+aud.addEventListener("seeked",()=>{ if(audSeekByUs){ audSeekByUs=false; return; } syncToAudio(); });
+function step(){
+  if(!replay||replay.i>=replay.evs.length){ if(replay){replay.playing=false; playBtn.textContent="▶";} return; }
+  const ev=replay.evs[replay.i++]; handle(ev,true); posEl.value=replay.i; posL.textContent=replay.i+" / "+replay.evs.length;
+  const sp=+document.getElementById("speed").value;
+  if(!replay.playing) return;
+  if(sp===0){ replay.timer=setTimeout(step,0); return; }
+  const nxt=replay.evs[replay.i]; const dt=nxt?Math.max(0,(nxt.ts-ev.ts)*1000/sp):0;
+  replay.timer=setTimeout(step, Math.min(dt,4000));
+}
+function play(){ if(!replay) return; if(replay.playing){ replay.playing=false; clearTimeout(replay.timer); playBtn.textContent="▶"; } else { replay.playing=true; playBtn.textContent="❚❚"; step(); } }
+function seek(n){
+  if(!replay) return; clearTimeout(replay.timer); replay.playing=false; playBtn.textContent="▶";
+  resetAll(); setMode("replay", replay.evs[0]&&replay.evs[0].corr); replay.i=0;
+  while(replay.i<n){ handle(replay.evs[replay.i++],false); }
+  posL.textContent=replay.i+" / "+replay.evs.length;
+  if(n>0) focusEvent(n-1, true);
+}
+document.getElementById("callsel").onchange=(e)=>{ if(e.target.value) startReplay(e.target.value); else { stopReplay(); resetAll(); setMode("live"); if(ws&&ws.readyState===1){ ws.close(); } } };
+playBtn.onclick=play;
+posEl.oninput=(e)=>seek(+e.target.value);
+document.addEventListener("keydown",(e)=>{ if(e.code==="Space"&&replay&&document.activeElement.tagName!=="SELECT"){ e.preventDefault(); play(); } });
+
+buildMap(); seqReset(); loadCalls(); connect();
+// ---- resizable panels: drag a gutter; heights persist per column in localStorage (best effort)
+function initResizable(col, key){
+  const kids=[...col.children], secs=kids.filter(k=>k.tagName==="SECTION"), MIN=48;
+  let heights;
+  try{ heights=JSON.parse(localStorage.getItem(key)||"null"); }catch(e){ heights=null; }
+  if(!heights||heights.length!==secs.length) heights=secs.map(s=>s.offsetHeight);
+  const apply=()=>{ col.style.gridTemplateRows=secs.map((s,i)=>s.hasAttribute("data-flex")?"minmax(0,1fr)":Math.max(MIN,heights[i])+"px").join(" 6px "); };
+  apply();
+  kids.filter(k=>k.classList.contains("gutter")).forEach(g=>{
+    const above=secs.indexOf(g.previousElementSibling), below=secs.indexOf(g.nextElementSibling);
+    const target = secs[above].hasAttribute("data-flex") ? below : above;   // the fixed neighbour
+    const sign = target===above ? 1 : -1;
+    g.onmousedown=e=>{
+      e.preventDefault(); const y0=e.clientY, h0=secs[target].offsetHeight;
+      g.classList.add("drag"); document.body.classList.add("dragging");
+      const mv=ev=>{ heights[target]=Math.max(MIN,h0+sign*(ev.clientY-y0)); secs.forEach((s,i)=>{ if(i!==target&&!s.hasAttribute("data-flex")) heights[i]=s.offsetHeight; }); apply(); };
+      const up=()=>{ window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up); g.classList.remove("drag"); document.body.classList.remove("dragging"); try{ localStorage.setItem(key,JSON.stringify(heights)); }catch(e){} };
+      window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up);
+    };
+    g.ondblclick=()=>{ try{ localStorage.removeItem(key); }catch(e){} col.style.gridTemplateRows=""; heights=secs.map(s=>s.offsetHeight); apply(); };
+  });
+}
+initResizable(document.querySelector(".left"),"gb.rows.left");
+initResizable(document.querySelector(".right"),"gb.rows.right");
+</script>
+</body>
+</html>

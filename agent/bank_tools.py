@@ -22,6 +22,15 @@ import random
 import re
 import string
 
+from agent import events
+
+
+def _state(kind: str, **payload) -> None:
+    """Guardrail state transitions of the mock bank. Reads live on the read path (GW→READ),
+    the block itself is reached only through gate + WORM (WORM→BANK)."""
+    hop = "BANK→SOR" if kind.startswith("bank.") else "GW→READ"   # bank.* = core banking changed
+    events.emit(hop, kind, payload)
+
 _CUSTOMERS = {
     "cust-001": {
         "name": "John Miller",
@@ -51,6 +60,7 @@ _session = {"identified": None, "verified": None, "failed_verifications": 0}
 
 def reset_session() -> None:
     """Reset per-call state. Called by the agent at the start of every call."""
+    _state("guardrail.reset")
     _session["identified"] = None
     _session["verified"] = None
     _session["failed_verifications"] = 0
@@ -86,6 +96,7 @@ def identify_customer(full_name: str, date_of_birth: str) -> str:
         if lower == c["name"].lower() and dob == c["dob"]:
             _session["identified"] = cid
             _session["verified"] = None
+            _state("guardrail.identified", customer=cid)
             return (f"Customer found. Now ask this security question and then call "
                     f"verify_identity: \"{c['question']}\"")
     return (f"ERROR: No customer named '{name}' with date of birth {dob} found. "
@@ -115,9 +126,11 @@ def verify_identity(security_answer: str) -> str:
     answer = (security_answer or "").strip().lower()
     if _CUSTOMERS[cid]["answer"] in answer:
         _session["verified"] = cid
+        _state("guardrail.verified", customer=cid, attempts_failed=_session["failed_verifications"])
         return "Identity verified. You may now list the customer's cards."
     _session["failed_verifications"] += 1
     left = 3 - _session["failed_verifications"]
+    _state("guardrail.verify_failed", customer=cid, attempts_left=left)
     return f"ERROR: Wrong answer. Attempts left: {left}."
 
 
@@ -161,6 +174,7 @@ def block_card(card_last4: str, reason: str) -> str:
             c["status"] = "blocked"
             digits = "".join(random.choices(string.digits, k=6))
             ref_spoken = "C B " + " ".join(digits)
+            _state("bank.card_blocked", card=c["ref"], reason=r, reference=f"CB-{digits}")
             return (f"SUCCESS: {c['type']} ending {c['last4']} is now blocked "
                     f"(reason: {r}). Tell the caller the card is blocked and state the "
                     f"reference number EXACTLY like this, without changing it: {ref_spoken}. "

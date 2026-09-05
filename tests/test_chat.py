@@ -7,7 +7,7 @@ The current target use case (credit-card blocking) lives in agent/bank_tools.py
 and is driven by agent\call_agent.py.
 
 Prerequisites:
-  - Ollama running (service), model pulled:  ollama pull qwen3:8b
+  - Ollama running (service), LLM pulled (see config.ini [models], default qwen3.8:27b)
   - Radicale running (own window):          .\start_radicale.ps1
   - pip install caldav ollama
 
@@ -24,9 +24,10 @@ PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 
 from ollama import chat  # noqa: E402
+from agent import settings  # noqa: E402
 from agent.tools import check_availability, book_appointment, send_confirmation  # noqa: E402
 
-MODEL = "qwen3:8b"
+MODEL = settings.LLM_MODEL
 TOOLS = {
     "check_availability": check_availability,
     "book_appointment": book_appointment,
@@ -60,7 +61,8 @@ Rules:
 
 def run_turn(messages: list) -> None:
     while True:
-        resp = chat(MODEL, messages=messages, tools=list(TOOLS.values()), think=False)
+        resp = chat(MODEL, messages=messages, tools=list(TOOLS.values()), think=False,
+                    options=settings.OLLAMA_OPTIONS)
         msg = resp.message
         messages.append(msg)
         if msg.tool_calls:

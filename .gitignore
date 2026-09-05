@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 
-# Secrets (real config lives in C:\Users\broic\Code\voiceagent-local\config.ini)
+# Secrets (real config lives next to this file, never committed)
 config.ini
 
 # Piper voice models (>100 MB, exceed GitHub's file limit; download via
@@ -12,3 +12,13 @@ config.ini
 
 # Call recordings / large audio
 audio/call_last.wav
+
+# Piper voices live in voices\ (downloaded by setup.ps1)
+voices/
+
+# venv and Radicale data inside the project folder
+.venv/
+radicale-data/
+
+# Glass Box event recordings (one JSONL per call)
+calls/

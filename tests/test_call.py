@@ -5,7 +5,6 @@ variant B (signed 8 bit). Note which one sounds clean.
 Usage:
     python tests\test_call.py
 """
-import configparser
 import os
 import socket
 import sys
@@ -26,21 +25,9 @@ from pyVoIP.VoIP import VoIPPhone, InvalidStateError
 pyVoIP.RTPCompatibleCodecs = [PayloadType.PCMU, PayloadType.EVENT]
 
 PROJECT = Path(__file__).resolve().parent.parent
-CONFIG_CANDIDATES = [
-    Path(r"C:\Users\broic\Code\voiceagent-local\config.ini"),
-    PROJECT / "config.ini",
-]
+sys.path.insert(0, str(PROJECT))
+from agent import settings  # noqa: E402
 GREETING = PROJECT / "audio" / "greeting_8k.wav"
-
-
-def load_config():
-    for p in CONFIG_CANDIDATES:
-        if p.exists():
-            cfg = configparser.ConfigParser()
-            cfg.read(p, encoding="utf-8")
-            print(f"Configuration: {p}")
-            return cfg["sip"]
-    sys.exit("No config.ini found.")
 
 
 def local_ip(fritzbox: str) -> str:
@@ -79,7 +66,8 @@ def answer(call):
 
 
 if __name__ == "__main__":
-    sip = load_config()
+    sip = settings.sip_config()
+    print(f"Configuration: {settings.CONFIG_PATH}")
     VARIANT_A, VARIANT_B = load_greeting_variants()
     my_ip = local_ip(sip["server"])
     print(f"Registering {sip['user']}@{sip['server']} from {my_ip} (codec: PCMU only) ...")
