@@ -507,7 +507,7 @@ function connect(){
   ws.onmessage=(m)=>{
     const msg=JSON.parse(m.data);
     if(msg.type==="hello"){ if(replay) return; resetAll(); setMode(msg.live?"live":"replay-only server", msg.corr); (msg.current||[]).forEach(e=>handle(e,false)); }
-    else if(msg.type==="event"){ if(replay) return; if(msg.event.kind==="call.start") { resetAll(); } setMode("live", msg.event.corr||document.getElementById("corr").textContent.replace("corr ","")); handle(msg.event,true); }
+    else if(msg.type==="event"){ if(replay) return; if(msg.event.kind==="call.start") { resetAll(); } if(msg.event.kind==="call.end") { setTimeout(loadCalls, 1500); } setMode("live", msg.event.corr||document.getElementById("corr").textContent.replace("corr ","")); handle(msg.event,true); }
   };
   ws.onclose=()=>{ if(!replay) setMode("disconnected — retrying"); setTimeout(connect,2000); };
 }
@@ -524,8 +524,7 @@ async function startReplay(name){
   stopReplay();
   const evs=await (await fetch("/api/calls/"+name)).json();
   replay={evs, i:0, playing:false, timer:null};
-  aud.pause();
-  if(callsInfo[name]&&callsInfo[name].audio){ aud.src="/api/calls/"+name+"/audio"; aud.hidden=false; } else { aud.hidden=true; aud.removeAttribute("src"); }
+  aud.pause(); aud.hidden=true; aud.src="/api/calls/"+name+"/audio"; aud.load();
   resetAll(); setMode("replay", evs[0]&&evs[0].corr); posEl.max=evs.length; posEl.value=0; posL.textContent="0 / "+evs.length;
   play();
 }
@@ -541,6 +540,8 @@ function syncToAudio(){
     if(replay.i>0) focusEvent(replay.i-1,true); }
   else if(n<replay.i){ seek(n); }
 }
+aud.addEventListener("loadedmetadata",()=>{ aud.hidden=false; });
+aud.addEventListener("error",()=>{ aud.hidden=true; });
 aud.addEventListener("play",()=>{ if(replay&&replay.playing){ replay.playing=false; clearTimeout(replay.timer); playBtn.textContent="▶"; } syncToAudio(); });
 aud.addEventListener("timeupdate",()=>{ if(!aud.paused) syncToAudio(); });
 aud.addEventListener("seeked",()=>{ if(audSeekByUs){ audSeekByUs=false; return; } syncToAudio(); });
@@ -561,6 +562,7 @@ function seek(n){
   posL.textContent=replay.i+" / "+replay.evs.length;
   if(n>0) focusEvent(n-1, true);
 }
+document.getElementById("callsel").onmousedown=()=>{ if(!replay) loadCalls(); };
 document.getElementById("callsel").onchange=(e)=>{ if(e.target.value) startReplay(e.target.value); else { stopReplay(); resetAll(); setMode("live"); if(ws&&ws.readyState===1){ ws.close(); } } };
 playBtn.onclick=play;
 posEl.oninput=(e)=>seek(+e.target.value);
